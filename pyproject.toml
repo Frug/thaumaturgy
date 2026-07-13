@@ -1,0 +1,31 @@
+[project]
+name = "thaumaturgy"
+version = "0.0.1"
+description = "A modern, portable local-LLM chat app (NiceGUI + FastAPI, GGUF-first)."
+requires-python = ">=3.11"
+dependencies = [
+    "nicegui",
+    "requests",              # talk to the llama-server HTTP API
+    "llama-cpp-binaries",    # bundled llama-server binary (URL pinned below)
+    "huggingface-hub",       # download models (light: no torch); direct GGUF pull
+]
+
+[project.optional-dependencies]
+# Phase 2: LoRA training + testing trained models. Not installed by default.
+# Also provides the safetensors->GGUF conversion deps used by the model downloader
+# (torch/transformers for the converter, gguf/sentencepiece/protobuf for tokenizers).
+training = [
+    "torch", "transformers", "peft", "datasets", "accelerate",
+    "gguf", "sentencepiece", "protobuf",
+]
+
+[tool.uv.sources]
+# Not on PyPI — oobabooga's prebuilt llama-server (CUDA cu131, Linux x86_64).
+llama-cpp-binaries = { url = "https://github.com/oobabooga/llama-cpp-binaries/releases/download/v0.138.0/llama_cpp_binaries-0.138.0+cu131-py3-none-linux_x86_64.whl" }
+
+[project.scripts]
+thaumaturgy = "thaumaturgy.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

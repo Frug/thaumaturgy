@@ -1,0 +1,17 @@
+# Personal / runtime data — defaults are seeded into here from code on first
+# run (store.BUILTIN_PRESETS, DEFAULT_CHARACTERS). Everything a user changes
+# (their presets, characters, chats) and everything heavy/regenerable (model
+# weights, cache) lives under data/ and stays out of version control.
+/data/
+
+# NiceGUI per-user storage (contains the session/storage-secret state)
+/.nicegui/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# OS
+.DS_Store
