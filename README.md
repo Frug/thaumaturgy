@@ -1,9 +1,9 @@
 # thaumaturgy
 
 A modern, portable, local-LLM chat app: an all-Python [NiceGUI](https://nicegui.io)
-frontend over a GGUF / `llama.cpp` serving core. Built to replace a clunky Gradio
-UI with something that resizes to content, keeps user data portable (plain
-JSON/YAML — no database), and installs cleanly with [uv](https://docs.astral.sh/uv/).
+frontend over a GGUF / `llama.cpp` serving core. It rewrites the original's UI
+into a format I find more intuitive, keeps user data portable (plain JSON/YAML —
+no database), and installs cleanly with [uv](https://docs.astral.sh/uv/).
 
 > **Status:** work in progress. Chat, character management, model loading, model
 > downloading (with safetensors→GGUF conversion), and persisted parameter sets
