@@ -3,6 +3,8 @@ name = "thaumaturgy"
 version = "0.0.1"
 description = "A modern, portable local-LLM chat app (NiceGUI + FastAPI, GGUF-first)."
 requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
 dependencies = [
     "nicegui",
     "requests",              # talk to the llama-server HTTP API
