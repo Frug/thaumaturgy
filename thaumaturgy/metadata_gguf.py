@@ -83,3 +83,33 @@ def read_context_length(fname) -> int | None:
             if arch and pending_ctx is not None:
                 return pending_ctx
     return pending_ctx
+
+
+def read_block_count(fname) -> int | None:
+    """Return the model's transformer block count from GGUF metadata, or None."""
+    with open(fname, "rb") as f:
+        if f.read(4) != b"GGUF":
+            return None
+        (version,) = struct.unpack("<I", f.read(4))
+        if version == 1:
+            return None
+        struct.unpack("<Q", f.read(8))  # tensor count (unused)
+        (kv_count,) = struct.unpack("<Q", f.read(8))
+
+        for _ in range(kv_count):
+            key = _read_str(f).decode("utf-8", "replace")
+            (value_type,) = struct.unpack("<I", f.read(4))
+            if value_type == _ARRAY:
+                (elem_type,) = struct.unpack("<I", f.read(4))
+                (length,) = struct.unpack("<Q", f.read(8))
+                if elem_type == _STRING:
+                    for _ in range(length):
+                        f.seek(struct.unpack("<Q", f.read(8))[0], 1)
+                else:
+                    f.seek(_SIZE[elem_type] * length, 1)
+                continue
+
+            if key.endswith(".block_count"):
+                return int(_read_scalar(f, value_type))
+            _skip_scalar(f, value_type)
+    return None

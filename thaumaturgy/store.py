@@ -215,3 +215,62 @@ def load_presets() -> dict:
 def save_presets(doc: dict) -> None:
     _presets_path().write_text(
         yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
+
+
+# ── Runtime profiles (model loading settings) ───────────────────────────────
+# These persist the llama-server launch settings that vary by model or machine:
+# GPU layers, requested context size, and KV-cache type.
+
+BUILTIN_RUNTIME_PROFILES = {
+    "Default": dict(gpu_layers=-1, context_size=0, cache_type="fp16"),
+}
+DEFAULT_RUNTIME_PROFILE = "Default"
+_OLD_RUNTIME_DEFAULT = dict(gpu_layers=100, context_size=8192, cache_type="fp16")
+
+
+def _runtime_profiles_path():
+    return data_dir() / "runtime_profiles.yaml"
+
+
+def _default_runtime_profiles_doc() -> dict:
+    sets = {name: dict(vals) for name, vals in BUILTIN_RUNTIME_PROFILES.items()}
+    sets[CUSTOM] = dict(BUILTIN_RUNTIME_PROFILES[DEFAULT_RUNTIME_PROFILE])
+    return {"sets": sets, "order": [*BUILTIN_RUNTIME_PROFILES, CUSTOM], "model_defaults": {}}
+
+
+def load_runtime_profiles() -> dict:
+    """Return {sets, order, model_defaults}, seeding defaults on first run."""
+    p = _runtime_profiles_path()
+    if not p.exists():
+        doc = _default_runtime_profiles_doc()
+        save_runtime_profiles(doc)
+        return doc
+    try:
+        doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return _default_runtime_profiles_doc()
+    sets = doc.get("sets") or {}
+    if not sets:
+        return _default_runtime_profiles_doc()
+    changed = False
+    for name, vals in sets.items():
+        if name in {DEFAULT_RUNTIME_PROFILE, CUSTOM} and vals == _OLD_RUNTIME_DEFAULT:
+            vals.update(BUILTIN_RUNTIME_PROFILES[DEFAULT_RUNTIME_PROFILE])
+            changed = True
+        before = dict(vals)
+        vals.setdefault("gpu_layers", -1)
+        vals.setdefault("context_size", 0)
+        vals.setdefault("cache_type", "fp16")
+        changed = changed or vals != before
+    order = [n for n in (doc.get("order") or list(sets)) if n in sets]
+    order += [n for n in sets if n not in order]
+    model_defaults = {m: s for m, s in (doc.get("model_defaults") or {}).items() if s in sets}
+    out = {"sets": sets, "order": order, "model_defaults": model_defaults}
+    if changed:
+        save_runtime_profiles(out)
+    return out
+
+
+def save_runtime_profiles(doc: dict) -> None:
+    _runtime_profiles_path().write_text(
+        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")

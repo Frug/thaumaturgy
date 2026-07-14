@@ -76,11 +76,22 @@ _HEAD_HTML = """
   .tg-chat-item.q-item {
     border-radius: 0;
     min-height: 0;
-    padding: 8px 14px;
+    padding: 8px 8px 8px 14px;
     transition: background 0.15s ease;
   }
   .tg-chat-item:hover { background: rgba(52, 97, 140, 0.14); }
   .tg-chat-item.tg-active { background: #34618C; color: #fff; }
+  .tg-chat-delete-section.q-item__section--side {
+    padding-left: 4px;
+    padding-right: 0;
+  }
+  .tg-chat-delete.q-btn {
+    color: #fff !important;
+    min-height: 24px;
+    min-width: 24px;
+    padding: 0;
+  }
+  .tg-chat-delete .q-icon { font-size: 16px; }
   /* Match the rounded container: round the first/last rows' outer corners */
   .tg-chat-list .tg-chat-item:first-child {
     border-top-left-radius: 8px; border-top-right-radius: 8px;
@@ -152,25 +163,13 @@ _HEAD_HTML = """
   .tg-strip { transition: transform 200ms ease; }
   .tg-strip.tg-edit { transform: translateX(-40%); }
 
-  /* Grouped parameter-set controls: bordered box with a right-pointing tail
-     that points at the related Parameters panel. */
+  /* Grouped model-page controls. */
   .tg-pset-box {
     position: relative;
     border: 1px solid rgba(52, 97, 140, 0.55);
     border-radius: 12px;
     padding: 12px;
     background: rgba(52, 97, 140, 0.05);
-  }
-  .tg-pset-box::after {
-    content: "";
-    position: absolute;
-    top: 50%;
-    right: -13px;
-    transform: translateY(-50%);
-    width: 0; height: 0;
-    border-top: 9px solid transparent;
-    border-bottom: 9px solid transparent;
-    border-left: 13px solid rgba(52, 97, 140, 0.55);
   }
 
   /* Pills / badges: more breathing room */

@@ -92,6 +92,10 @@ def _api_messages(chat: dict, character: str, char_details: dict) -> list[dict]:
     return messages
 
 
+def _truncate(text: str, max_len: int = 40) -> str:
+    return text if len(text) <= max_len else f"{text[:max_len]}..."
+
+
 def render():
     """Build the Chat page inside the current layout container."""
     characters = store.list_characters()
@@ -121,8 +125,9 @@ def render():
         with detail:
             with ui.column().classes("w-full gap-0 items-center"):
                 ui.label("MODEL").classes("text-xs text-muted tracking-wide")
-                ui.label(model or "unknown") \
-                    .classes("text-sm font-mono text-center break-all")
+                model_name = model or "unknown"
+                ui.badge(_truncate(model_name)).props("color=primary").classes(
+                    "text-[10px] font-mono text-center break-all max-w-full").tooltip(model_name)
             ui.separator()
             with ui.avatar(color="secondary", size="88px").props("text-color=white"):
                 ui.label((c["name"] or "?")[0].upper()).classes("text-3xl")
@@ -160,6 +165,35 @@ def render():
     def load_chat(chat_id: str):
         page["chat"] = store.load_chat(chat_id)
         render_messages()
+        chat_list.refresh()
+
+    pending_delete = {"chat": None}
+
+    with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3").style("width:420px;max-width:92vw"):
+        delete_label = ui.label().classes("text-sm leading-relaxed")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=delete_dialog.close).props("flat")
+            ui.button("Delete", icon="delete",
+                      on_click=lambda: (delete_dialog.close(), delete_pending_chat())) \
+                .props("color=negative unelevated")
+
+    def ask_delete_chat(chat: dict):
+        pending_delete["chat"] = chat
+        title = chat.get("title") or "New chat"
+        delete_label.text = f"Delete chat “{title}”? This can't be undone."
+        delete_dialog.open()
+
+    def delete_pending_chat():
+        chat = pending_delete.get("chat")
+        if not chat:
+            return
+        deleting_active = page["chat"] and page["chat"].get("id") == chat.get("id")
+        store.delete_chat(chat["id"])
+        pending_delete["chat"] = None
+        if deleting_active:
+            chats = store.list_chats(appstate.state.current_character)
+            page["chat"] = chats[0] if chats else None
+            render_messages()
         chat_list.refresh()
 
     def new_chat():
@@ -237,6 +271,11 @@ def render():
                     ui.label(c.get("title") or "New chat") \
                         .classes("font-medium text-sm ellipsis w-full")
                     ui.label(_rel_time(c.get("updated"))).classes("text-xs text-muted")
+                with item, ui.item_section().props("side").classes("tg-chat-delete-section"):
+                    ui.button(icon="delete", on_click=lambda chat=c: ask_delete_chat(chat)) \
+                        .props("flat round dense size=sm") \
+                        .classes("tg-chat-delete") \
+                        .tooltip("Delete chat")
 
     # ── Layout: sidebar + main ───────────────────────────────────────────────
     with ui.row().classes("w-full gap-4 no-wrap").style("height: calc(100vh - 7rem)"):

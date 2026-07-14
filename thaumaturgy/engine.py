@@ -61,6 +61,7 @@ def list_models() -> list[str]:
 
 
 _ctx_cache: dict[str, int | None] = {}
+_max_gpu_layers_cache: dict[str, int | None] = {}
 
 
 def trained_ctx(model_name: str) -> int | None:
@@ -72,6 +73,17 @@ def trained_ctx(model_name: str) -> int | None:
         except OSError:
             _ctx_cache[model_name] = None
     return _ctx_cache[model_name]
+
+
+def max_gpu_layers(model_name: str) -> int | None:
+    """Maximum GPU layers for llama.cpp, based on GGUF block count."""
+    if model_name not in _max_gpu_layers_cache:
+        try:
+            blocks = metadata_gguf.read_block_count(models_dir() / model_name)
+            _max_gpu_layers_cache[model_name] = blocks + 1 if blocks is not None else None
+        except OSError:
+            _max_gpu_layers_cache[model_name] = None
+    return _max_gpu_layers_cache[model_name]
 
 
 def _free_port() -> int:
@@ -97,8 +109,8 @@ class LlamaServer:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def start(self, model_name: str, gpu_layers: int = 999,
-              ctx_size: int = 8192, cache_type: str = "fp16") -> None:
+    def start(self, model_name: str, gpu_layers: int = -1,
+              ctx_size: int = 0, cache_type: str = "fp16") -> None:
         self.stop()
         path = models_dir() / model_name
         if not path.exists():
