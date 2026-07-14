@@ -5,7 +5,7 @@ frontend over a GGUF / `llama.cpp` serving core. It rewrites the original's UI
 into a format I find more intuitive, keeps user data portable (plain JSON/YAML —
 no database), and installs cleanly with [uv](https://docs.astral.sh/uv/).
 
-> **Status:** work in progress. Chat, character management, model loading, model
+> **Status:** work in progress. Chat, scenario management, model loading, model
 > downloading (with safetensors→GGUF conversion), and persisted parameter sets
 > work today. Tools/MCP, the Notebook view, and the OpenAI/Anthropic API server
 > are not yet ported.
@@ -28,9 +28,11 @@ for LoRA training.
 ## Data & portability
 
 Everything user-owned lives under the data dir (`./data` by default) as plain
-files: `characters/*.yaml`, `chats/*.json`, and `presets.yaml`. Defaults are
-seeded from code on first run, and the whole `data/` directory is gitignored so
-personal preferences and chats stay out of version control.
+files: `scenarios/*.yaml`, `chats/*.json`, and `presets.yaml`. Default scenario
+examples live in `thaumaturgy/defaults/scenarios/` and are copied into
+`data/scenarios/` once for a fresh data directory. After that they are normal
+local scenarios and can be edited or deleted in the UI. The whole `data/`
+directory is gitignored, so those local changes do not show up as Git changes.
 
 ## Credits
 

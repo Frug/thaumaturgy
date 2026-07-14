@@ -1,6 +1,6 @@
-# Personal / runtime data — defaults are seeded into here from code on first
-# run (store.BUILTIN_PRESETS, DEFAULT_CHARACTERS). Everything a user changes
-# (their presets, characters, chats) and everything heavy/regenerable (model
+# Personal / runtime data. Scenario examples are copied into here from
+# thaumaturgy/defaults/scenarios on first run. Everything a user changes
+# (their presets, scenarios, chats) and everything heavy/regenerable (model
 # weights, cache) lives under data/ and stays out of version control.
 /data/
 

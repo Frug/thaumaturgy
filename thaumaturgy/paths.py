@@ -1,6 +1,6 @@
 """Portable data directory resolution.
 
-Everything user-owned (chats, characters, presets, config) lives under a single
+Everything user-owned (chats, scenarios, presets, config) lives under a single
 data dir so it can be tarred up and moved. Order of precedence:
   1. $THAUM_DATA
   2. ./data  (relative to the working directory)

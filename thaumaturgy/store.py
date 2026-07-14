@@ -1,20 +1,8 @@
-"""Persistence for chats — one JSON file per chat under <data>/chats/.
-
-Chats are tied to a character (the list on the chat page filters by character).
-No database: each chat is a self-contained JSON document:
-
-    {
-      "id": "20260711-143002",
-      "character": "Sage Thornwood",
-      "model": "Qwen2.5-7B-Instruct-Q4_K_M.gguf",
-      "title": "...",
-      "created": 1783..., "updated": 1783...,
-      "messages": [ {"role": "assistant"|"user", "name": "...", "text": "..."} ]
-    }
-"""
+"""Persistence for chats, scenarios, and model/generation settings."""
 
 import json
 import time
+from pathlib import Path
 
 import yaml
 
@@ -33,8 +21,8 @@ def _title_from(messages: list[dict]) -> str:
     return "New chat"
 
 
-def new_chat(character: str | None, model: str | None,
-             greeting: str | None = None) -> dict:
+def new_chat(scenario: str | None, model: str | None,
+             opening_text: str | None = None) -> dict:
     now = time.time()
     chat_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     # Avoid collisions if two chats start within the same second.
@@ -43,15 +31,15 @@ def new_chat(character: str | None, model: str | None,
         chat_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     chat = {
         "id": chat_id,
-        "character": character,
+        "scenario": scenario,
         "model": model,
         "title": "New chat",
         "created": now,
         "updated": now,
         "messages": [],
     }
-    if greeting:
-        chat["messages"].append({"role": "assistant", "name": character, "text": greeting})
+    if opening_text:
+        chat["messages"].append({"role": "assistant", "name": scenario, "text": opening_text})
     save_chat(chat)
     return chat
 
@@ -70,14 +58,14 @@ def load_chat(chat_id: str) -> dict | None:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def list_chats(character: str | None = None) -> list[dict]:
+def list_chats(scenario: str | None = None) -> list[dict]:
     out = []
     for p in chats_dir().glob("*.json"):
         try:
             c = json.loads(p.read_text(encoding="utf-8"))
         except (ValueError, OSError):
             continue
-        if character is None or c.get("character") == character:
+        if scenario is None or c.get("scenario") == scenario:
             out.append(c)
     out.sort(key=lambda c: c.get("updated", 0), reverse=True)
     return out
@@ -89,28 +77,16 @@ def delete_chat(chat_id: str) -> None:
         p.unlink()
 
 
-# ── Characters (one YAML file each under <data>/characters/) ─────────────────
-# A character dict carries a "_file" key (its on-disk slug) so renames can move
-# the file. Format on disk is just name / context / greeting.
+# ── Scenarios (one YAML file each under <data>/scenarios/) ──────────────────
+# A scenario dict carries a "_file" key (its on-disk slug) so renames can move
+# the file.
 
-DEFAULT_CHARACTERS = [
-    {
-        "name": "Sage Thornwood",
-        "context": ("Sage is an elderly forest hermit and herbalist. Patient, cryptic, "
-                    "and endlessly curious about the people who wander into the woods."),
-        "greeting": "Ah. The forest whispered that a traveler was near. Sit — the tea is nearly ready.",
-    },
-    {
-        "name": "Unit-7",
-        "context": ("Unit-7 is a decommissioned security android rediscovering the world. "
-                    "It is literal, polite, and quietly fascinated by human idioms."),
-        "greeting": "Greeting acknowledged. I am Unit-7. I am told this is where a conversation begins.",
-    },
-]
+DEFAULT_SCENARIOS_DIR = Path(__file__).parent / "defaults" / "scenarios"
+SCENARIO_SEED_MARKER = ".defaults_seeded"
 
 
-def characters_dir():
-    return sub_dir("characters")
+def scenarios_dir():
+    return sub_dir("scenarios")
 
 
 def _slug(name: str) -> str:
@@ -118,11 +94,16 @@ def _slug(name: str) -> str:
     return keep or "unnamed"
 
 
-def list_characters() -> list[dict]:
-    d = characters_dir()
-    if not any(d.glob("*.yaml")):
-        for c in DEFAULT_CHARACTERS:
-            save_character(dict(c))
+def list_scenarios() -> list[dict]:
+    d = scenarios_dir()
+    seed_marker = d / SCENARIO_SEED_MARKER
+    if not seed_marker.exists():
+        if not any(d.glob("*.yaml")):
+            for p in sorted(DEFAULT_SCENARIOS_DIR.glob("*.yaml")):
+                target = d / p.name
+                if not target.exists():
+                    target.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+        seed_marker.write_text("Default scenarios seeded.\n", encoding="utf-8")
     out = []
     for p in sorted(d.glob("*.yaml")):
         try:
@@ -132,33 +113,33 @@ def list_characters() -> list[dict]:
         out.append({
             "name": data.get("name", p.stem),
             "context": data.get("context", ""),
-            "greeting": data.get("greeting", ""),
+            "opening_text": data.get("opening_text", ""),
             "_file": p.stem,
         })
-    out.sort(key=lambda c: c["name"].lower())
+    out.sort(key=lambda s: s["name"].lower())
     return out
 
 
-def save_character(char: dict) -> None:
-    new_slug = _slug(char.get("name", ""))
-    old_file = char.get("_file")
+def save_scenario(scenario: dict) -> None:
+    new_slug = _slug(scenario.get("name", ""))
+    old_file = scenario.get("_file")
     if old_file and old_file != new_slug:
-        old = characters_dir() / f"{old_file}.yaml"
+        old = scenarios_dir() / f"{old_file}.yaml"
         if old.exists():
             old.unlink()
     data = {
-        "name": char.get("name", ""),
-        "context": char.get("context", ""),
-        "greeting": char.get("greeting", ""),
+        "name": scenario.get("name", ""),
+        "context": scenario.get("context", ""),
+        "opening_text": scenario.get("opening_text", ""),
     }
-    (characters_dir() / f"{new_slug}.yaml").write_text(
+    (scenarios_dir() / f"{new_slug}.yaml").write_text(
         yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    char["_file"] = new_slug
+    scenario["_file"] = new_slug
 
 
-def delete_character(char: dict) -> None:
-    slug = char.get("_file") or _slug(char.get("name", ""))
-    p = characters_dir() / f"{slug}.yaml"
+def delete_scenario(scenario: dict) -> None:
+    slug = scenario.get("_file") or _slug(scenario.get("name", ""))
+    p = scenarios_dir() / f"{slug}.yaml"
     if p.exists():
         p.unlink()
 

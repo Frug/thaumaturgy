@@ -86,7 +86,6 @@ _HEAD_HTML = """
     padding-right: 0;
   }
   .tg-chat-delete.q-btn {
-    color: #fff !important;
     min-height: 24px;
     min-width: 24px;
     padding: 0;
@@ -137,7 +136,7 @@ _HEAD_HTML = """
   .q-select__dropdown-icon,
   .q-expansion-item__toggle-icon { transition-duration: 150ms !important; }
 
-  /* Right-side sliding info panel (character details, etc.) */
+  /* Right-side sliding info panel (scenario details, etc.) */
   .tg-slidepanel {
     position: fixed; top: var(--tg-header-h); right: 0;
     height: calc(100vh - var(--tg-header-h)); width: 340px;

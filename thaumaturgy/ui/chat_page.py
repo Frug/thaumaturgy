@@ -1,9 +1,9 @@
-"""Chat page — conversation view with a per-character chat sidebar.
+"""Chat page — conversation view with a per-scenario chat sidebar.
 
-Left sidebar: character selector, "New chat", and the list of previous chats for
-the selected character (chats are tied to characters, persisted as JSON). Main
+Left sidebar: scenario selector, "New chat", and the list of previous chats for
+the selected scenario (chats are tied to scenarios, persisted as JSON). Main
 area: the transcript + input. Send streams the assistant's reply live from the
-llama-server engine using the selected character (context) + parameter set.
+llama-server engine using the selected scenario + parameter set.
 """
 
 import asyncio
@@ -33,15 +33,15 @@ def _avatar(m: dict):
         ui.label((m.get("name") or "?")[0].upper())
 
 
-def _message(m: dict, on_char_click=None):
+def _message(m: dict, on_scenario_click=None):
     """Render one message row; returns the markdown element (for live updates)."""
     is_user = m["role"] == "user"
-    clickable = (not is_user) and on_char_click is not None
+    clickable = (not is_user) and on_scenario_click is not None
     with ui.row().classes("w-full gap-3 no-wrap items-start pb-4"):
         col = ui.column().classes("items-center gap-1 w-16 shrink-0")
         if clickable:
             col.classes("cursor-pointer hover:opacity-80")
-            col.on("click", lambda: on_char_click(m["name"], m.get("model")))
+            col.on("click", lambda: on_scenario_click(m.get("model")))
         with col:
             _avatar(m)
             ui.label(m.get("name") or "").classes(
@@ -81,9 +81,10 @@ async def _consume(gen_factory, on_delta):
         raise err["exc"]
 
 
-def _api_messages(chat: dict, character: str, char_details: dict) -> list[dict]:
+def _api_messages(chat: dict, scenario: str, scenario_details: dict) -> list[dict]:
     messages = []
-    context = char_details.get(character, {}).get("context")
+    details = scenario_details.get(scenario, {})
+    context = details.get("context")
     if context:
         messages.append({"role": "system", "content": context})
     for m in chat["messages"]:
@@ -98,14 +99,14 @@ def _truncate(text: str, max_len: int = 40) -> str:
 
 def render():
     """Build the Chat page inside the current layout container."""
-    characters = store.list_characters()
-    char_names = [c["name"] for c in characters]
-    char_details = {c["name"]: c for c in characters}
-    if appstate.state.current_character not in char_names:
-        appstate.state.current_character = char_names[0] if char_names else None
+    scenarios = store.list_scenarios()
+    scenario_names = [s["name"] for s in scenarios]
+    scenario_details = {s["name"]: s for s in scenarios}
+    if appstate.state.current_scenario not in scenario_names:
+        appstate.state.current_scenario = scenario_names[0] if scenario_names else None
     page = {"chat": None}
 
-    # ── Character info panel (slides in from the right) ──────────────────────
+    # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
     info_panel = ui.column().classes("tg-slidepanel p-4 gap-3")
 
@@ -119,8 +120,10 @@ def render():
             ui.button(icon="close", on_click=close_panel).props("flat round dense")
         detail = ui.column().classes("w-full gap-3 items-center")
 
-    def open_character(name: str, model: str | None = None):
-        c = char_details.get(name, {"name": name, "context": "", "greeting": ""})
+    def open_scenario(model: str | None = None):
+        name = appstate.state.current_scenario
+        scenario = scenario_details.get(
+            name, {"name": name or "", "context": "", "opening_text": ""})
         detail.clear()
         with detail:
             with ui.column().classes("w-full gap-0 items-center"):
@@ -130,14 +133,14 @@ def render():
                     "text-[10px] font-mono text-center break-all max-w-full").tooltip(model_name)
             ui.separator()
             with ui.avatar(color="secondary", size="88px").props("text-color=white"):
-                ui.label((c["name"] or "?")[0].upper()).classes("text-3xl")
-            ui.label(c["name"]).classes("text-lg font-semibold text-center")
+                ui.label((scenario["name"] or "?")[0].upper()).classes("text-3xl")
+            ui.label(scenario["name"]).classes("text-lg font-semibold text-center")
             ui.separator()
             with ui.column().classes("w-full gap-1"):
-                ui.label("CONTEXT").classes("text-xs text-muted tracking-wide")
-                ui.markdown(c["context"] or "_None_").classes("text-sm leading-relaxed")
+                ui.label("SCENARIO CONTEXT").classes("text-xs text-muted tracking-wide")
+                ui.markdown(scenario["context"] or "_None_").classes("text-sm leading-relaxed")
                 ui.label("OPENING TEXT").classes("text-xs text-muted tracking-wide mt-3")
-                ui.markdown(c["greeting"] or "_None_").classes("text-sm leading-relaxed")
+                ui.markdown(scenario["opening_text"] or "_None_").classes("text-sm leading-relaxed")
         info_panel.classes(add="tg-open")
         backdrop.classes(add="tg-open")
 
@@ -156,7 +159,7 @@ def render():
             page["inner"] = inner
             with inner:
                 for m in chat["messages"]:
-                    _message(m, on_char_click=open_character)
+                    _message(m, on_scenario_click=open_scenario)
 
     def scroll_bottom():
         transcript_scroll.scroll_to(percent=1.0)
@@ -191,20 +194,20 @@ def render():
         store.delete_chat(chat["id"])
         pending_delete["chat"] = None
         if deleting_active:
-            chats = store.list_chats(appstate.state.current_character)
+            chats = store.list_chats(appstate.state.current_scenario)
             page["chat"] = chats[0] if chats else None
             render_messages()
         chat_list.refresh()
 
     def new_chat():
-        char = appstate.state.current_character
-        greeting = char_details.get(char, {}).get("greeting")
-        page["chat"] = store.new_chat(char, appstate.state.current_model, greeting)
+        scenario = appstate.state.current_scenario
+        opening_text = scenario_details.get(scenario, {}).get("opening_text")
+        page["chat"] = store.new_chat(scenario, appstate.state.current_model, opening_text)
         render_messages()
         chat_list.refresh()
 
-    def on_character_change(name: str):
-        appstate.state.current_character = name
+    def on_scenario_change(name: str):
+        appstate.state.current_scenario = name
         chats = store.list_chats(name)
         page["chat"] = chats[0] if chats else None
         render_messages()
@@ -220,18 +223,18 @@ def render():
         if page["chat"] is None:
             new_chat()
         chat = page["chat"]
-        char = appstate.state.current_character
+        scenario = appstate.state.current_scenario
         chat["messages"].append({"role": "user", "name": "You", "text": text})
         input_box.value = ""
         render_messages()
         scroll_bottom()
 
-        api = _api_messages(chat, char, char_details)  # up to and including the new user turn
+        api = _api_messages(chat, scenario, scenario_details)
         model_name = engine.server.model or appstate.state.current_model
-        assistant = {"role": "assistant", "name": char, "text": "", "model": model_name}
+        assistant = {"role": "assistant", "name": scenario, "text": "", "model": model_name}
         chat["messages"].append(assistant)
         with page["inner"]:
-            md = _message(assistant, on_char_click=open_character)
+            md = _message(assistant, on_scenario_click=open_scenario)
 
         last = [0.0]
 
@@ -256,7 +259,7 @@ def render():
 
     @ui.refreshable
     def chat_list():
-        chats = store.list_chats(appstate.state.current_character)
+        chats = store.list_chats(appstate.state.current_scenario)
         if not chats:
             ui.label("No chats yet — start one.").classes("text-muted text-sm p-2")
             return
@@ -273,16 +276,16 @@ def render():
                     ui.label(_rel_time(c.get("updated"))).classes("text-xs text-muted")
                 with item, ui.item_section().props("side").classes("tg-chat-delete-section"):
                     ui.button(icon="delete", on_click=lambda chat=c: ask_delete_chat(chat)) \
-                        .props("flat round dense size=sm") \
+                        .props("flat round dense size=sm text-color=white") \
                         .classes("tg-chat-delete") \
                         .tooltip("Delete chat")
 
     # ── Layout: sidebar + main ───────────────────────────────────────────────
     with ui.row().classes("w-full gap-4 no-wrap").style("height: calc(100vh - 7rem)"):
         with ui.column().classes("h-full w-64 shrink-0 gap-2 no-wrap"):
-            ui.select(options=char_names, value=appstate.state.current_character,
-                      label="Character",
-                      on_change=lambda e: on_character_change(e.value)) \
+            ui.select(options=scenario_names, value=appstate.state.current_scenario,
+                      label="Scenario",
+                      on_change=lambda e: on_scenario_change(e.value)) \
                 .props("filled").classes("w-full tg-field")
             ui.button("New chat", icon="add", on_click=new_chat) \
                 .props("color=positive unelevated").classes("w-full")
@@ -301,7 +304,7 @@ def render():
                 ui.button(icon="send", on_click=send) \
                     .props("color=primary unelevated").classes("h-14 w-14")
 
-    _existing = store.list_chats(appstate.state.current_character)
+    _existing = store.list_chats(appstate.state.current_scenario)
     page["chat"] = _existing[0] if _existing else None
     render_messages()
     chat_list.refresh()
