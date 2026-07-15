@@ -1,7 +1,9 @@
 # thaumaturgy
 
+<img width="820" height="381" alt="image" src="https://github.com/user-attachments/assets/b47d3aea-2ef6-49ec-8ffa-cd3ca949d9ad" />
+
 A modern, portable, local-LLM chat app: an all-Python [NiceGUI](https://nicegui.io)
-frontend over a GGUF / `llama.cpp` serving core. It rewrites the original's UI
+frontend over a GGUF / `llama.cpp` serving core based on Textgen. It rewrites the original's UI
 into a format I find more intuitive, keeps user data portable (plain JSON/YAML —
 no database), and installs cleanly with [uv](https://docs.astral.sh/uv/).
 
