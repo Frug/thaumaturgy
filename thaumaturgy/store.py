@@ -1,12 +1,24 @@
 """Persistence for chats, scenarios, and model/generation settings."""
 
 import json
+import os
 import time
 from pathlib import Path
 
 import yaml
 
 from thaumaturgy.paths import chats_dir, data_dir, sub_dir
+
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Replace `path` in one step, so a concurrent reader never sees a partial file.
+
+    Chats are saved from the generation worker thread while the UI thread lists
+    and loads them, and a plain write would expose the truncated intermediate.
+    """
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _chat_path(chat_id: str):
@@ -47,15 +59,16 @@ def new_chat(scenario: str | None, model: str | None,
 def save_chat(chat: dict) -> None:
     chat["updated"] = time.time()
     chat["title"] = _title_from(chat.get("messages", []))
-    _chat_path(chat["id"]).write_text(
-        json.dumps(chat, indent=2, ensure_ascii=False), encoding="utf-8")
+    _write_atomic(_chat_path(chat["id"]),
+                  json.dumps(chat, indent=2, ensure_ascii=False))
 
 
 def load_chat(chat_id: str) -> dict | None:
     p = _chat_path(chat_id)
-    if not p.exists():
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
         return None
-    return json.loads(p.read_text(encoding="utf-8"))
 
 
 def list_chats(scenario: str | None = None) -> list[dict]:

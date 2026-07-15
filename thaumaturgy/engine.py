@@ -9,15 +9,15 @@ Single model at a time (one subprocess); matches local single-user use.
 """
 
 import atexit
-from collections import deque
 import json
 import os
-import signal
 import shlex
+import signal
 import socket
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 import requests
@@ -199,18 +199,32 @@ class LlamaServer:
         except (requests.RequestException, ValueError):
             self.n_ctx = None
 
+    @staticmethod
+    def _wait(proc: subprocess.Popen, timeout: float) -> bool:
+        try:
+            proc.wait(timeout=timeout)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
+
+    def _shut_down(self, proc: subprocess.Popen) -> None:
+        """Terminate proc, escalating to SIGKILL, and report the outcome."""
+        self._append_output("Stopping llama-server...")
+        proc.terminate()
+        if not self._wait(proc, 10):
+            self._append_output("llama-server did not stop in time; killing it.")
+            proc.kill()
+            if not self._wait(proc, 5):
+                # Only reachable if the process is wedged in an uninterruptible
+                # wait. Give up rather than block the UI (or exit) forever.
+                self._append_output("llama-server ignored SIGKILL; abandoning it.")
+                return
+        self._append_output("llama-server stopped.")
+
     def stop(self) -> None:
         proc = self.proc
         if proc is not None and proc.poll() is None:
-            self._append_output("Stopping llama-server...")
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                self._append_output("llama-server did not stop in time; killing it.")
-                proc.kill()
-                proc.wait(timeout=5)
-            self._append_output("llama-server stopped.")
+            self._shut_down(proc)
         elif proc is not None:
             self._append_output(f"llama-server exited with code {proc.returncode}.")
         self.proc = None

@@ -172,8 +172,7 @@ _HEAD_HTML = """
   }
   .tg-server-output {
     height: 288px;
-    min-height: 288px;
-    max-height: 288px;
+    min-height: 288px;  /* the card is a flex column; don't let it collapse */
     padding: 10px 12px;
     border-radius: 10px;
     background: rgba(52, 97, 140, 0.16);

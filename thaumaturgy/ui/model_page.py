@@ -6,7 +6,7 @@ and, in edit mode, the parameter-set editor. VRAM is a rough pre-load estimate;
 context is detected from the server after load.
 """
 
-from nicegui import app, run, ui
+from nicegui import run, ui
 
 from thaumaturgy import appstate, engine, hf_download, store
 
@@ -212,27 +212,25 @@ def _model_card(bridge):
         with ui.column().classes("tg-pset-box w-full gap-2"):
             with ui.row().classes("w-full items-center justify-between"):
                 ui.label("llama.cpp Output").classes("text-xs text-muted uppercase tracking-wide")
-                ui.badge("last 500 lines").props("color=secondary").classes("font-mono")
+                ui.badge(f"last {engine.SERVER_LOG_LIMIT} lines").props("color=secondary") \
+                    .classes("font-mono")
             server_output_scroll = ui.scroll_area().classes("w-full tg-server-output")
             with server_output_scroll:
                 server_output = ui.label(server_output_text()) \
                     .classes("tg-server-output-text font-mono")
 
-        server_output_state = {"text": server_output.text}
+        shown_output = {"text": server_output.text}
 
         def refresh_server_output():
-            if server_output.is_deleted or server_output_scroll.is_deleted:
-                log_timer.cancel()
-                return
             text = server_output_text()
-            if text == server_output_state["text"]:
+            if text == shown_output["text"]:
                 return
-            server_output_state["text"] = text
+            shown_output["text"] = text
             server_output.text = text
             server_output_scroll.scroll_to(percent=1.0)
 
-        log_timer = app.timer(1.0, refresh_server_output, immediate=False)
-        bridge["refresh_server_output"] = refresh_server_output
+        # ui.timer (not app.timer): cancels itself when this client goes away.
+        ui.timer(1.0, refresh_server_output, immediate=False)
 
         def refresh_status():
             if engine.server.running:
@@ -314,14 +312,29 @@ def render():
     sets: dict = doc["sets"]
     order: list = doc["order"]
     model_defaults: dict = doc["model_defaults"]
-    start = DEFAULT_PRESET if DEFAULT_PRESET in sets else order[0]
 
     runtime_doc = store.load_runtime_profiles()
     runtime_sets: dict = runtime_doc["sets"]
     runtime_order: list = runtime_doc["order"]
     runtime_model_defaults: dict = runtime_doc["model_defaults"]
-    runtime_start = (DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE in runtime_sets
-                     else runtime_order[0])
+
+    def param_default_for_model(model_name: str | None) -> str:
+        """The model's pinned parameter set, else the global default."""
+        pinned = model_defaults.get(model_name)
+        if pinned in sets:
+            return pinned
+        return DEFAULT_PRESET if DEFAULT_PRESET in sets else order[0]
+
+    def runtime_default_for_model(model_name: str | None) -> str:
+        """The model's pinned runtime profile, else the global default."""
+        pinned = runtime_model_defaults.get(model_name)
+        if pinned in runtime_sets:
+            return pinned
+        return (DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE in runtime_sets
+                else runtime_order[0])
+
+    start = param_default_for_model(None)
+    runtime_start = runtime_default_for_model(None)
 
     state = {
         "mode": "view",
@@ -380,18 +393,6 @@ def render():
 
     bridge["current_model"] = current_model
     bridge["active_runtime"] = active_runtime
-
-    def param_default_for_model(model_name: str | None) -> str:
-        pinned = model_defaults.get(model_name)
-        if pinned in sets:
-            return pinned
-        return DEFAULT_PRESET if DEFAULT_PRESET in sets else order[0]
-
-    def runtime_default_for_model(model_name: str | None) -> str:
-        pinned = runtime_model_defaults.get(model_name)
-        if pinned in runtime_sets:
-            return pinned
-        return DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE in runtime_sets else runtime_order[0]
 
     def select_model_defaults(model_name: str | None, update_selectors: bool = True):
         if not model_name or model_name.startswith("("):
