@@ -33,6 +33,14 @@ def _avatar(m: dict):
         ui.label((m.get("name") or "?")[0].upper())
 
 
+def _finish_warning(reason: str | None) -> str | None:
+    if not reason or reason == "stop":
+        return None
+    if reason == "length":
+        return "Generation stopped because Max new tokens was reached."
+    return f"Generation finished with reason: {reason}."
+
+
 def _message(m: dict, on_scenario_click=None):
     """Render one message row; returns the markdown element (for live updates)."""
     is_user = m["role"] == "user"
@@ -52,33 +60,51 @@ def _message(m: dict, on_scenario_click=None):
             bubble.style("background: rgba(52,97,140,0.10)")
         with bubble:
             md = ui.markdown(m.get("text") or "").classes("text-sm leading-relaxed break-words")
+            warning = _finish_warning(m.get("finish_reason"))
+            if warning:
+                ui.badge(warning).props("color=warning text-color=dark") \
+                    .classes("self-start text-xs mt-1")
     return md
 
 
-async def _consume(gen_factory, on_delta):
-    """Run a blocking generator in a thread; deliver its items to the UI loop."""
-    loop = asyncio.get_running_loop()
-    queue: asyncio.Queue = asyncio.Queue()
-    done = object()
-    err: dict = {}
+def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict) -> dict:
+    """Run model streaming off the UI task and save partial output as it arrives."""
+    chat_id = chat["id"]
+    state = {
+        "chat_id": chat_id,
+        "chat": chat,
+        "assistant": assistant,
+        "assistant_index": len(chat.get("messages", [])) - 1,
+        "done": False,
+        "error": None,
+    }
+    appstate.state.generations[chat_id] = state
 
     def worker():
+        last_save = 0.0
         try:
-            for item in gen_factory():
-                loop.call_soon_threadsafe(queue.put_nowait, item)
-        except Exception as exc:  # noqa: BLE001 - surfaced to the caller
-            err["exc"] = exc
+            for event in engine.server.stream_chat(api, params):
+                if event.get("type") == "finish":
+                    assistant["finish_reason"] = event.get("reason")
+                    continue
+                delta = event.get("text", "")
+                if not delta:
+                    continue
+                assistant["text"] += delta
+                now = time.monotonic()
+                if now - last_save > 0.5:
+                    store.save_chat(chat)
+                    last_save = now
+        except Exception as exc:  # noqa: BLE001 - stored for the observing UI
+            state["error"] = exc
         finally:
-            loop.call_soon_threadsafe(queue.put_nowait, done)
+            state["done"] = True
+            store.save_chat(chat)
+            if appstate.state.generations.get(chat_id) is state:
+                del appstate.state.generations[chat_id]
 
     threading.Thread(target=worker, daemon=True).start()
-    while True:
-        item = await queue.get()
-        if item is done:
-            break
-        on_delta(item)
-    if "exc" in err:
-        raise err["exc"]
+    return state
 
 
 def _api_messages(chat: dict, scenario: str, scenario_details: dict) -> list[dict]:
@@ -105,6 +131,15 @@ def render():
     if appstate.state.current_scenario not in scenario_names:
         appstate.state.current_scenario = scenario_names[0] if scenario_names else None
     page = {"chat": None}
+
+    def generation_for_chat(chat_id: str | None) -> dict | None:
+        return appstate.state.generations.get(chat_id or "")
+
+    def load_chat_state(chat_id: str | None) -> dict | None:
+        generation = generation_for_chat(chat_id)
+        if generation:
+            return generation["chat"]
+        return store.load_chat(chat_id) if chat_id else None
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
@@ -148,6 +183,7 @@ def render():
     def render_messages():
         msgs_col.clear()
         page["inner"] = None
+        page["stream_md"] = None
         with msgs_col:
             chat = page["chat"]
             if not chat:
@@ -158,17 +194,55 @@ def render():
             inner = ui.column().classes("w-full max-w-3xl mx-auto gap-2")
             page["inner"] = inner
             with inner:
-                for m in chat["messages"]:
-                    _message(m, on_scenario_click=open_scenario)
+                generation = generation_for_chat(chat.get("id"))
+                for i, m in enumerate(chat["messages"]):
+                    md = _message(m, on_scenario_click=open_scenario)
+                    if generation and i == generation["assistant_index"]:
+                        page["stream_md"] = md
 
     def scroll_bottom():
         transcript_scroll.scroll_to(percent=1.0)
 
+    async def observe_generation(generation: dict):
+        last = [0.0]
+        while not generation["done"]:
+            await asyncio.sleep(0.05)
+            if msgs_col.is_deleted or transcript_scroll.is_deleted:
+                return
+            if not page["chat"] or page["chat"].get("id") != generation["chat_id"]:
+                return
+            md = page.get("stream_md")
+            if md is None or md.is_deleted:
+                return
+            now = time.monotonic()
+            if now - last[0] > 0.05:
+                md.content = generation["assistant"].get("text", "")
+                scroll_bottom()
+                last[0] = now
+
+        if msgs_col.is_deleted or transcript_scroll.is_deleted:
+            return
+        if not page["chat"] or page["chat"].get("id") != generation["chat_id"]:
+            return
+        if generation["error"]:
+            ui.notify(f"Generation error: {generation['error']}", type="negative")
+        md = page.get("stream_md")
+        if md is not None and not md.is_deleted:
+            md.content = generation["assistant"].get("text") or "_(no output)_"
+        if generation["assistant"].get("finish_reason") and generation["assistant"]["finish_reason"] != "stop":
+            render_messages()
+        scroll_bottom()
+        chat_list.refresh()
+
     # ── Chat management ──────────────────────────────────────────────────────
     def load_chat(chat_id: str):
-        page["chat"] = store.load_chat(chat_id)
+        page["chat"] = load_chat_state(chat_id)
+        appstate.state.current_chat_id = chat_id if page["chat"] else None
         render_messages()
         chat_list.refresh()
+        generation = generation_for_chat(chat_id)
+        if generation:
+            asyncio.create_task(observe_generation(generation))
 
     pending_delete = {"chat": None}
 
@@ -190,12 +264,17 @@ def render():
         chat = pending_delete.get("chat")
         if not chat:
             return
+        if generation_for_chat(chat.get("id")):
+            ui.notify("Wait for generation to finish before deleting this chat.",
+                      type="warning")
+            return
         deleting_active = page["chat"] and page["chat"].get("id") == chat.get("id")
         store.delete_chat(chat["id"])
         pending_delete["chat"] = None
         if deleting_active:
             chats = store.list_chats(appstate.state.current_scenario)
             page["chat"] = chats[0] if chats else None
+            appstate.state.current_chat_id = page["chat"]["id"] if page["chat"] else None
             render_messages()
         chat_list.refresh()
 
@@ -203,6 +282,7 @@ def render():
         scenario = appstate.state.current_scenario
         opening_text = scenario_details.get(scenario, {}).get("opening_text")
         page["chat"] = store.new_chat(scenario, appstate.state.current_model, opening_text)
+        appstate.state.current_chat_id = page["chat"]["id"]
         render_messages()
         chat_list.refresh()
 
@@ -210,6 +290,7 @@ def render():
         appstate.state.current_scenario = name
         chats = store.list_chats(name)
         page["chat"] = chats[0] if chats else None
+        appstate.state.current_chat_id = page["chat"]["id"] if page["chat"] else None
         render_messages()
         chat_list.refresh()
 
@@ -233,29 +314,14 @@ def render():
         model_name = engine.server.model or appstate.state.current_model
         assistant = {"role": "assistant", "name": scenario, "text": "", "model": model_name}
         chat["messages"].append(assistant)
+        store.save_chat(chat)
         with page["inner"]:
             md = _message(assistant, on_scenario_click=open_scenario)
+            page["stream_md"] = md
 
-        last = [0.0]
-
-        def on_delta(delta: str):
-            assistant["text"] += delta
-            now = time.monotonic()
-            if now - last[0] > 0.05:
-                md.content = assistant["text"]
-                scroll_bottom()
-                last[0] = now
-
-        try:
-            await _consume(
-                lambda: engine.server.stream_chat(api, appstate.state.current_params),
-                on_delta)
-        except Exception as exc:  # noqa: BLE001
-            ui.notify(f"Generation error: {exc}", type="negative")
-        md.content = assistant["text"] or "_(no output)_"
-        scroll_bottom()
-        store.save_chat(chat)
-        chat_list.refresh()
+        generation = _start_generation(chat, api, assistant,
+                                       dict(appstate.state.current_params))
+        await observe_generation(generation)
 
     @ui.refreshable
     def chat_list():
@@ -305,6 +371,14 @@ def render():
                     .props("color=primary unelevated").classes("h-14 w-14")
 
     _existing = store.list_chats(appstate.state.current_scenario)
-    page["chat"] = _existing[0] if _existing else None
+    _current_chat = load_chat_state(appstate.state.current_chat_id)
+    if _current_chat and _current_chat.get("scenario") == appstate.state.current_scenario:
+        page["chat"] = _current_chat
+    else:
+        page["chat"] = _existing[0] if _existing else None
+        appstate.state.current_chat_id = page["chat"]["id"] if page["chat"] else None
     render_messages()
     chat_list.refresh()
+    generation = generation_for_chat(page["chat"]["id"] if page["chat"] else None)
+    if generation:
+        asyncio.create_task(observe_generation(generation))

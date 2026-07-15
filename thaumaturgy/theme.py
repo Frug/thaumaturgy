@@ -170,6 +170,23 @@ _HEAD_HTML = """
     padding: 12px;
     background: rgba(52, 97, 140, 0.05);
   }
+  .tg-server-output {
+    height: 288px;
+    min-height: 288px;
+    max-height: 288px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(52, 97, 140, 0.16);
+  }
+  .body--dark .tg-server-output {
+    background: rgba(52, 97, 140, 0.30);
+  }
+  .tg-server-output-text {
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
 
   /* Pills / badges: more breathing room */
   .q-badge { padding: 4px 10px; border-radius: 8px; font-weight: 500; }

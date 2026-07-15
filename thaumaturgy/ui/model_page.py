@@ -6,7 +6,7 @@ and, in edit mode, the parameter-set editor. VRAM is a rough pre-load estimate;
 context is detected from the server after load.
 """
 
-from nicegui import run, ui
+from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine, hf_download, store
 
@@ -87,6 +87,11 @@ def _runtime_context_label(vals: dict) -> str:
 
 def _model_card(bridge):
     models = engine.list_models()
+
+    def server_output_text() -> str:
+        lines = engine.server.output_lines()
+        return "\n".join(lines) if lines else "No llama.cpp output yet."
+
     with ui.card().classes("w-full h-full p-5 gap-4 overflow-auto"):
         with ui.row().classes("w-full items-center justify-between"):
             ui.label("Model").classes("text-lg font-semibold")
@@ -102,6 +107,9 @@ def _model_card(bridge):
             model.disable()
             ui.label(f"Put .gguf files in {engine.models_dir()}").classes("text-xs text-muted")
         bridge["model_select"] = model
+        if models:
+            appstate.state.current_model = model.value
+            bridge["select_model_defaults"](model.value, update_selectors=False)
 
         # ── Download-model dialog ────────────────────────────────────────────
         with ui.dialog() as dl_dialog, ui.card().classes("p-5 gap-3").style("width:520px;max-width:92vw"):
@@ -141,6 +149,7 @@ def _model_card(bridge):
                 model.set_options(engine.list_models(), value=name)
                 model.enable()
                 appstate.state.current_model = name
+                bridge["select_model_defaults"](name)
                 refresh_status()
                 refresh_preview()
                 dl_dialog.close()
@@ -200,6 +209,31 @@ def _model_card(bridge):
             lambda e: bridge["apply_runtime"](e.value) if "apply_runtime" in bridge else None)
         bridge["runtime_select"] = runtime_profile
 
+        with ui.column().classes("tg-pset-box w-full gap-2"):
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label("llama.cpp Output").classes("text-xs text-muted uppercase tracking-wide")
+                ui.badge("last 500 lines").props("color=secondary").classes("font-mono")
+            server_output_scroll = ui.scroll_area().classes("w-full tg-server-output")
+            with server_output_scroll:
+                server_output = ui.label(server_output_text()) \
+                    .classes("tg-server-output-text font-mono")
+
+        server_output_state = {"text": server_output.text}
+
+        def refresh_server_output():
+            if server_output.is_deleted or server_output_scroll.is_deleted:
+                log_timer.cancel()
+                return
+            text = server_output_text()
+            if text == server_output_state["text"]:
+                return
+            server_output_state["text"] = text
+            server_output.text = text
+            server_output_scroll.scroll_to(percent=1.0)
+
+        log_timer = app.timer(1.0, refresh_server_output, immediate=False)
+        bridge["refresh_server_output"] = refresh_server_output
+
         def refresh_status():
             if engine.server.running:
                 extra = f" · ctx {engine.server.n_ctx}" if engine.server.n_ctx else ""
@@ -229,6 +263,7 @@ def _model_card(bridge):
             finally:
                 load_btn.props(remove="loading")
                 refresh_status()
+                refresh_server_output()
                 refresh_preview()
 
         async def confirm_gpu_layers():
@@ -261,18 +296,10 @@ def _model_card(bridge):
             await run_load(current_model, gpu_layers, ctx_size, cache_type)
 
         load_btn.on_click(load)
-        if models:
-            appstate.state.current_model = model.value
 
         def on_model_change(_=None):
             appstate.state.current_model = model.value
-            sel = bridge.get("param_select")
-            if sel is not None:
-                sel.set_options(bridge["pset_options"](), value=sel.value)
-            rsel = bridge.get("runtime_select")
-            if rsel is not None:
-                rsel.set_options(bridge["runtime_options"](), value=rsel.value)
-            refresh_preview()
+            bridge["select_model_defaults"](model.value)
 
         model.on_value_change(on_model_change)
         refresh_status()
@@ -354,6 +381,36 @@ def render():
     bridge["current_model"] = current_model
     bridge["active_runtime"] = active_runtime
 
+    def param_default_for_model(model_name: str | None) -> str:
+        pinned = model_defaults.get(model_name)
+        if pinned in sets:
+            return pinned
+        return DEFAULT_PRESET if DEFAULT_PRESET in sets else order[0]
+
+    def runtime_default_for_model(model_name: str | None) -> str:
+        pinned = runtime_model_defaults.get(model_name)
+        if pinned in runtime_sets:
+            return pinned
+        return DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE in runtime_sets else runtime_order[0]
+
+    def select_model_defaults(model_name: str | None, update_selectors: bool = True):
+        if not model_name or model_name.startswith("("):
+            return
+        state["active"] = param_default_for_model(model_name)
+        state["runtime_active"] = runtime_default_for_model(model_name)
+        if state["mode"] == "param_edit":
+            state["editing"] = state["active"]
+        elif state["mode"] == "runtime_edit":
+            state["runtime_editing"] = state["runtime_active"]
+        bridge["start_pset"] = state["active"]
+        bridge["start_runtime"] = state["runtime_active"]
+        sync_active_params()
+        if update_selectors:
+            refresh_selectors()
+            refresh_preview()
+
+    bridge["select_model_defaults"] = select_model_defaults
+
     def pset_options():
         d = model_defaults.get(current_model())
         return {n: (f"{n} *" if n == d else n) for n in order}
@@ -389,8 +446,8 @@ def render():
 
     def use_default():
         sel = bridge.get("param_select")
-        d = model_defaults.get(current_model())
-        if sel is not None and d in order:
+        d = param_default_for_model(current_model())
+        if sel is not None:
             sel.value = d
 
     def make_runtime_default():
@@ -407,8 +464,8 @@ def render():
 
     def use_runtime_default():
         sel = bridge.get("runtime_select")
-        d = runtime_model_defaults.get(current_model())
-        if sel is not None and d in runtime_order:
+        d = runtime_default_for_model(current_model())
+        if sel is not None:
             sel.value = d
 
     bridge["pset_options"] = pset_options
