@@ -6,7 +6,7 @@ and, in edit mode, the parameter-set editor. VRAM is a rough pre-load estimate;
 context is detected from the server after load.
 """
 
-from nicegui import run, ui
+from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine, hf_download, store
 
@@ -222,6 +222,9 @@ def _model_card(bridge):
         shown_output = {"text": server_output.text}
 
         def refresh_server_output():
+            if server_output.is_deleted or server_output_scroll.is_deleted:
+                log_timer.cancel()
+                return
             text = server_output_text()
             if text == shown_output["text"]:
                 return
@@ -229,8 +232,11 @@ def _model_card(bridge):
             server_output.text = text
             server_output_scroll.scroll_to(percent=1.0)
 
-        # ui.timer (not app.timer): cancels itself when this client goes away.
-        ui.timer(1.0, refresh_server_output, immediate=False)
+        # app.timer, not ui.timer: ui.timer resolves a weakref to its parent slot
+        # on the way into its run loop — before it consults its own is_deleted
+        # check — and raises once this client's element tree has been collected.
+        # app.timer never touches the slot, so we stop it ourselves above.
+        log_timer = app.timer(1.0, refresh_server_output, immediate=False)
 
         def refresh_status():
             if engine.server.running:
