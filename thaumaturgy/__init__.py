@@ -1,3 +1,3 @@
-"""thaumaturgy — a modern, portable local-LLM chat app."""
+"""thaumaturgy - portable local-LLM chat."""
 
 __version__ = "0.0.1"
