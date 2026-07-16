@@ -10,6 +10,10 @@ import yaml
 from thaumaturgy.paths import chats_dir, data_dir, sub_dir
 
 
+def _app_config_path() -> Path:
+    return data_dir() / "app_config.yaml"
+
+
 def _write_atomic(path: Path, text: str) -> None:
     """Replace `path` in one step, so a concurrent reader never sees a partial file.
 
@@ -88,6 +92,36 @@ def delete_chat(chat_id: str) -> None:
     p = _chat_path(chat_id)
     if p.exists():
         p.unlink()
+
+
+# ── App config ──────────────────────────────────────────────────────────────
+
+def load_app_config() -> dict:
+    p = _app_config_path()
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_app_config(config: dict) -> None:
+    _write_atomic(_app_config_path(),
+                  yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
+
+
+def save_last_loaded_model(model_name: str | None) -> None:
+    config = load_app_config()
+    if model_name:
+        config["last_loaded_model"] = model_name
+    else:
+        config.pop("last_loaded_model", None)
+    save_app_config(config)
+
+
+def last_loaded_model() -> str | None:
+    model = load_app_config().get("last_loaded_model")
+    return model if isinstance(model, str) and model else None
 
 
 # ── Scenarios (one YAML file each under <data>/scenarios/) ──────────────────
@@ -213,10 +247,18 @@ def save_presets(doc: dict) -> None:
 
 # ── Runtime profiles (model loading settings) ───────────────────────────────
 # These persist the llama-server launch settings that vary by model or machine:
-# GPU layers, requested context size, and KV-cache type.
+# GPU layers, requested context size, KV-cache type, chat template override, and
+# llama.cpp reasoning controls.
 
 BUILTIN_RUNTIME_PROFILES = {
-    "Default": dict(gpu_layers=-1, context_size=0, cache_type="fp16"),
+    "Default": dict(
+        gpu_layers=-1,
+        context_size=0,
+        cache_type="fp16",
+        chat_template="auto",
+        reasoning="auto",
+        reasoning_budget=-1,
+    ),
 }
 DEFAULT_RUNTIME_PROFILE = "Default"
 _OLD_RUNTIME_DEFAULT = dict(gpu_layers=100, context_size=8192, cache_type="fp16")
@@ -255,6 +297,9 @@ def load_runtime_profiles() -> dict:
         vals.setdefault("gpu_layers", -1)
         vals.setdefault("context_size", 0)
         vals.setdefault("cache_type", "fp16")
+        vals.setdefault("chat_template", "auto")
+        vals.setdefault("reasoning", "auto")
+        vals.setdefault("reasoning_budget", -1)
         changed = changed or vals != before
     order = [n for n in (doc.get("order") or list(sets)) if n in sets]
     order += [n for n in sets if n not in order]

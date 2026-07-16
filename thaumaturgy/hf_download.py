@@ -7,7 +7,7 @@ Two paths, chosen by what the repo actually contains:
 
   * Repo is safetensors → snapshot it, convert to an f16 GGUF with llama.cpp's
     convert_hf_to_gguf.py (auto-fetched, pinned to the bundled binary's build
-    commit), then quantize with the bundled llama-quantize. Heavy path: needs the
+    commit), then quantize with the resolved llama-quantize. Heavy path: needs the
     convert deps (torch/transformers/gguf/sentencepiece) from the `training` extra.
 
 All long steps take an on_progress(str) callback so the UI can show stage text.
@@ -22,8 +22,7 @@ from pathlib import Path
 
 import requests
 
-import llama_cpp_binaries
-
+from thaumaturgy import llama_bins
 from thaumaturgy.engine import models_dir
 from thaumaturgy.paths import sub_dir
 
@@ -45,12 +44,8 @@ def parse_repo_id(url: str) -> str:
     return "/".join(parts[:2])
 
 
-def _bin_dir() -> Path:
-    return Path(llama_cpp_binaries.get_binary_path()).parent
-
-
 def _build_commit() -> str:
-    out = subprocess.run([str(_bin_dir() / "llama-server"), "--version"],
+    out = subprocess.run([str(llama_bins.server_path()), "--version"],
                          capture_output=True, text=True, timeout=30)
     m = re.search(r"\(([0-9a-f]{7,40})\)", (out.stdout or "") + (out.stderr or ""))
     if not m:
@@ -148,7 +143,7 @@ def download(url: str, quant: str, on_progress=lambda _m: None) -> str:
                   on_progress, "Converting to GGUF")
 
     out = models_dir() / f"{model_name}-{quant}.gguf"
-    _run_streamed([str(_bin_dir() / "llama-quantize"), str(f16), str(out), quant],
+    _run_streamed([str(llama_bins.binary_path("llama-quantize")), str(f16), str(out), quant],
                   on_progress, f"Quantizing to {quant}")
 
     on_progress("Cleaning up…")

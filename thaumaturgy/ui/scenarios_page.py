@@ -81,7 +81,7 @@ def render():
         if not scenarios:
             ui.label("No scenarios yet — click New.").classes("text-muted text-sm p-3")
             return
-        with ui.list().classes("w-full gap-1"):
+        with ui.list().classes("w-full"):
             for i, s in enumerate(scenarios):
                 item = ui.item(on_click=lambda i=i: select(i)).classes("tg-nav-item w-full")
                 if i == state["selected"]:
@@ -100,8 +100,7 @@ def render():
                 ui.button(icon="delete", on_click=delete_scenario) \
                     .props("color=negative unelevated") \
                     .tooltip("Delete selected scenario")
-            with ui.scroll_area().classes("flex-1 w-full rounded-lg p-1") \
-                    .style("background: rgba(52,97,140,0.08)"):
+            with ui.scroll_area().classes("flex-1 w-full min-h-0 tg-list-shell"):
                 scenario_list()
 
         with ui.card().classes("h-full flex-1 p-5 gap-3 overflow-auto"):

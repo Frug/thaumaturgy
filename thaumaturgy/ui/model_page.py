@@ -11,6 +11,15 @@ from nicegui import app, run, ui
 from thaumaturgy import appstate, engine, hf_download, store
 
 CACHE_TYPES = ["fp16", "q8_0", "q4_0"]
+CHAT_TEMPLATES = {
+    "auto": "Auto",
+    "gemma": "Gemma / Gemma 4",
+}
+REASONING_MODES = {
+    "auto": "Auto",
+    "off": "Off",
+    "on": "On",
+}
 
 # Quantization targets offered in the download dialog (llama-quantize names).
 QUANT_TYPES = ["Q3_K_M", "Q4_K_S", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"]
@@ -62,13 +71,20 @@ def _file_size_gb(name: str) -> float:
         return 0.0
 
 
-def _runtime_load_args(vals: dict) -> tuple[int, int, str]:
+def _runtime_load_args(vals: dict) -> tuple[int, int, str, str, str, int]:
     gpu_layers = int(vals.get("gpu_layers", -1))
     ctx_size = int(vals.get("context_size", 0))
     cache_type = vals.get("cache_type", "fp16")
     if cache_type not in CACHE_TYPES:
         cache_type = "fp16"
-    return gpu_layers, ctx_size, cache_type
+    chat_template = vals.get("chat_template", "auto")
+    if chat_template not in CHAT_TEMPLATES:
+        chat_template = "auto"
+    reasoning = vals.get("reasoning", "auto")
+    if reasoning not in REASONING_MODES:
+        reasoning = "auto"
+    reasoning_budget = int(vals.get("reasoning_budget", -1))
+    return gpu_layers, ctx_size, cache_type, chat_template, reasoning, reasoning_budget
 
 
 def _runtime_gpu_label(vals: dict) -> str:
@@ -83,6 +99,23 @@ def _runtime_gpu_label(vals: dict) -> str:
 def _runtime_context_label(vals: dict) -> str:
     ctx = int(vals.get("context_size", 0))
     return "auto" if ctx == 0 else f"{ctx:,} tokens"
+
+
+def _runtime_chat_template_label(vals: dict) -> str:
+    return CHAT_TEMPLATES.get(vals.get("chat_template", "auto"), CHAT_TEMPLATES["auto"])
+
+
+def _runtime_reasoning_label(vals: dict) -> str:
+    return REASONING_MODES.get(vals.get("reasoning", "auto"), REASONING_MODES["auto"])
+
+
+def _runtime_reasoning_budget_label(vals: dict) -> str:
+    budget = int(vals.get("reasoning_budget", -1))
+    if budget < 0:
+        return "unrestricted"
+    if budget == 0:
+        return "immediate end"
+    return f"{budget:,} tokens"
 
 
 def _model_card(bridge):
@@ -140,7 +173,8 @@ def _model_card(bridge):
                 return
             prog = {"msg": "Starting…"}
             timer = ui.timer(0.3, lambda: setattr(dl_status, "text", prog["msg"]))
-            dl_go.props("loading"); dl_go.disable()
+            dl_go.props("loading")
+            dl_go.disable()
             try:
                 name = await run.io_bound(
                     hf_download.download, url, dl_quant.value,
@@ -158,7 +192,8 @@ def _model_card(bridge):
                 ui.notify(f"Download failed: {exc}", type="negative")
             finally:
                 timer.deactivate()
-                dl_go.props(remove="loading"); dl_go.enable()
+                dl_go.props(remove="loading")
+                dl_go.enable()
 
         dl_go.on_click(do_download)
 
@@ -255,12 +290,15 @@ def _model_card(bridge):
                 ui.button("Cancel", on_click=gpu_layers_dialog.close).props("flat")
                 ok_btn = ui.button("OK").props("color=warning unelevated")
 
-        async def run_load(current_model: str, gpu_layers: int, ctx_size: int, cache_type: str):
+        async def run_load(current_model: str, gpu_layers: int, ctx_size: int,
+                           cache_type: str, chat_template: str, reasoning: str,
+                           reasoning_budget: int):
             load_btn.props("loading")
             ui.notify(f"Loading {current_model}…")
             try:
                 await run.io_bound(engine.server.start, current_model, gpu_layers,
-                                   ctx_size, cache_type)
+                                   ctx_size, cache_type, chat_template, reasoning,
+                                   reasoning_budget)
                 ui.notify(f"Loaded {current_model}")
             except Exception as exc:  # noqa: BLE001 - surface any startup failure
                 ui.notify(f"Load failed: {exc}", type="negative")
@@ -281,7 +319,8 @@ def _model_card(bridge):
             if not current_model:
                 ui.notify("No models in the models folder", type="negative")
                 return
-            gpu_layers, ctx_size, cache_type = _runtime_load_args(bridge["active_runtime"]())
+            gpu_layers, ctx_size, cache_type, chat_template, reasoning, reasoning_budget = (
+                _runtime_load_args(bridge["active_runtime"]()))
             max_layers = engine.max_gpu_layers(current_model)
             if max_layers is not None and gpu_layers > max_layers:
                 pending_load.clear()
@@ -290,6 +329,9 @@ def _model_card(bridge):
                     "gpu_layers": gpu_layers,
                     "ctx_size": ctx_size,
                     "cache_type": cache_type,
+                    "chat_template": chat_template,
+                    "reasoning": reasoning,
+                    "reasoning_budget": reasoning_budget,
                 })
                 gpu_layers_warning.text = (
                     f"The selected runtime profile requests {gpu_layers} GPU layers, "
@@ -297,7 +339,8 @@ def _model_card(bridge):
                     "Loading may fail or behave unexpectedly. Continue?")
                 gpu_layers_dialog.open()
                 return
-            await run_load(current_model, gpu_layers, ctx_size, cache_type)
+            await run_load(current_model, gpu_layers, ctx_size, cache_type,
+                           chat_template, reasoning, reasoning_budget)
 
         load_btn.on_click(load)
 
@@ -377,6 +420,11 @@ def render():
         vals["context_size"] = int(vals.get("context_size", 0))
         if vals.get("cache_type") not in CACHE_TYPES:
             vals["cache_type"] = "fp16"
+        if vals.get("chat_template") not in CHAT_TEMPLATES:
+            vals["chat_template"] = "auto"
+        if vals.get("reasoning") not in REASONING_MODES:
+            vals["reasoning"] = "auto"
+        vals["reasoning_budget"] = int(vals.get("reasoning_budget", -1))
         return vals
 
     def active_runtime():
@@ -692,6 +740,9 @@ def render():
                     summary_row("GPU layers", _runtime_gpu_label(runtime))
                     summary_row("Context size", _runtime_context_label(runtime))
                     summary_row("KV cache type", runtime.get("cache_type", "fp16"))
+                    summary_row("Chat template", _runtime_chat_template_label(runtime))
+                    summary_row("Reasoning", _runtime_reasoning_label(runtime))
+                    summary_row("Reasoning budget", _runtime_reasoning_budget_label(runtime))
                     summary_row("Estimated VRAM", vram_label(runtime))
 
                 ui.separator()
@@ -762,6 +813,28 @@ def render():
                                                value=vals.get("cache_type", "fp16"),
                                                label="KV cache type") \
                 .classes("w-full tg-field").props("filled")
+            controls["chat_template"] = ui.select(options=CHAT_TEMPLATES,
+                                                  value=vals.get("chat_template", "auto"),
+                                                  label="Chat template") \
+                .classes("w-full tg-field").props("filled")
+            ui.label(
+                "Auto uses the model's embedded/default template. Use Gemma / Gemma 4 "
+                "when a model card asks for the Gemma template."
+            ) \
+                .classes("text-xs text-muted leading-snug")
+            controls["reasoning"] = ui.select(options=REASONING_MODES,
+                                              value=vals.get("reasoning", "auto"),
+                                              label="Reasoning") \
+                .classes("w-full tg-field").props("filled")
+            ui.label(
+                "Use Off for models that spend the whole reply thinking before answering."
+            ).classes("text-xs text-muted leading-snug")
+            controls["reasoning_budget"] = ui.number(label="Reasoning budget",
+                                                     value=vals.get("reasoning_budget", -1),
+                                                     min=-1, step=128) \
+                .classes("w-full tg-field").props("filled")
+            ui.label("-1 = unrestricted. 0 = immediate end of thinking.") \
+                .classes("text-xs text-muted leading-snug")
 
             with ui.row().classes("w-full items-center gap-2 mt-1 p-3 rounded-lg") \
                     .style("background: rgba(52,97,140,0.10)"):
@@ -770,10 +843,14 @@ def render():
                 vram = ui.label().classes("ml-auto text-base font-semibold font-mono")
 
             def save_runtime_edit(_=None):
+                budget = controls["reasoning_budget"].value
                 runtime_sets[state["runtime_editing"]] = {
                     "gpu_layers": int(controls["gpu_layers"].value),
                     "context_size": int(controls["context_size"].value or 0),
                     "cache_type": controls["cache_type"].value,
+                    "chat_template": controls["chat_template"].value,
+                    "reasoning": controls["reasoning"].value,
+                    "reasoning_budget": int(budget if budget is not None else -1),
                 }
                 persist_runtime()
                 vram.text = vram_label(runtime_sets[state["runtime_editing"]])
@@ -795,7 +872,7 @@ def render():
 
     @ui.refreshable
     def sets_list():
-        with ui.list().classes("w-full gap-1"):
+        with ui.list().classes("w-full"):
             if state["mode"] == "runtime_edit":
                 for name in runtime_order:
                     item = ui.item(on_click=lambda n=name: select_runtime(n)) \
@@ -832,8 +909,7 @@ def render():
                     .props("color=positive unelevated").classes("flex-1")
                 ui.button(icon="delete", on_click=ask_delete) \
                     .props("color=negative unelevated").tooltip("Delete selected")
-            with ui.scroll_area().classes("flex-1 w-full rounded-lg p-1") \
-                    .style("background: rgba(52,97,140,0.08)"):
+            with ui.scroll_area().classes("flex-1 w-full min-h-0 tg-list-shell"):
                 sets_list()
 
     with ui.element("div").classes("w-full overflow-hidden") \

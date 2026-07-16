@@ -21,7 +21,7 @@ COLORS = dict(
     secondary="#2AA198",
     accent="#f0a050",
     dark="#1e222c",       # component/card surface in dark mode
-    dark_page="#1A1D26",  # page background in dark mode
+    dark_page="#18191f",  # page background in dark mode
     positive="#3f9e5a",   # green for confirm/commit actions (Load, Save, ...)
     negative="#b83a3a",   # dark red for cancel/destructive actions (Unload, Reset, ...)
     info="#268BD2",
@@ -48,7 +48,7 @@ _HEAD_HTML = """
 
   /* Page backgrounds */
   .body--light { background: #EDEFF3; color: #4a4f5a; }
-  .body--dark  { background: #1A1D26; color: #EDEFF3; }
+  .body--dark  { background: #18191f; color: #EDEFF3; }
 
   /* Frosted, borderless header that blends into the page */
   .tg-header {
@@ -91,12 +91,18 @@ _HEAD_HTML = """
     padding: 0;
   }
   .tg-chat-delete .q-icon { font-size: 16px; }
-  /* Match the rounded container: round the first/last rows' outer corners */
-  .tg-chat-list .tg-chat-item:first-child {
-    border-top-left-radius: 8px; border-top-right-radius: 8px;
+  .tg-list-shell {
+    border-radius: 8px;
+    overflow: hidden;
+    background: rgba(52, 97, 140, 0.06);
   }
-  .tg-chat-list .tg-chat-item:last-child {
-    border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+  .tg-list-shell .q-scrollarea__content,
+  .tg-list-shell .q-list {
+    padding: 0;
+    width: 100%;
+  }
+  .tg-list-shell .tg-nav-item {
+    border-radius: 0;
   }
 
   /* Soft, rounded cards with diffuse shadows */

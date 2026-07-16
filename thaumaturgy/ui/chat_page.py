@@ -7,10 +7,11 @@ llama-server engine using the selected scenario + parameter set.
 """
 
 import asyncio
+import re
 import threading
 import time
 
-from nicegui import ui
+from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine, store
 
@@ -36,9 +37,17 @@ def _avatar(m: dict):
 def _finish_warning(reason: str | None) -> str | None:
     if not reason or reason == "stop":
         return None
+    if reason == "error":
+        return "Generation failed before the model finished replying."
     if reason == "length":
         return "Generation stopped because Max new tokens was reached."
     return f"Generation finished with reason: {reason}."
+
+
+def _message_warning(m: dict) -> str | None:
+    if m.get("generation_error"):
+        return f"Generation failed: {m['generation_error']}"
+    return _finish_warning(m.get("finish_reason"))
 
 
 def _message(m: dict, on_scenario_click=None):
@@ -60,7 +69,7 @@ def _message(m: dict, on_scenario_click=None):
             bubble.style("background: rgba(52,97,140,0.10)")
         with bubble:
             md = ui.markdown(m.get("text") or "").classes("text-sm leading-relaxed break-words")
-            warning = _finish_warning(m.get("finish_reason"))
+            warning = _message_warning(m)
             if warning:
                 ui.badge(warning).props("color=warning text-color=dark") \
                     .classes("self-start text-xs mt-1")
@@ -96,7 +105,10 @@ def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict
                     store.save_chat(chat)
                     last_save = now
         except Exception as exc:  # noqa: BLE001 - stored for the observing UI
-            state["error"] = exc
+            error = str(exc)
+            state["error"] = error
+            assistant["finish_reason"] = "error"
+            assistant["generation_error"] = error
         finally:
             store.save_chat(chat)
             if appstate.state.generations.get(chat_id) is state:
@@ -119,8 +131,38 @@ def _api_messages(chat: dict, scenario: str, scenario_details: dict) -> list[dic
     return messages
 
 
+def _context_total(model_name: str | None = None) -> int | None:
+    if engine.server.n_ctx:
+        return engine.server.n_ctx
+    model = model_name or engine.server.model or appstate.state.current_model
+    return engine.trained_ctx(model) if model else None
+
+
+def _context_label(used: int | None, total: int | None, exact: bool = True) -> str:
+    if used is None:
+        return "Context --"
+    prefix = "" if exact else "~"
+    if total:
+        pct = min(999, round((used / total) * 100))
+        return f"Context {prefix}{used:,} / {total:,} ({pct}%)"
+    return f"Context {prefix}{used:,}"
+
+
 def _truncate(text: str, max_len: int = 40) -> str:
     return text if len(text) <= max_len else f"{text[:max_len]}..."
+
+
+def _normalize_user_markdown(text: str) -> str:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return re.sub(r"(?<!\n)\n(?!\n)", "\n\n", text)
+
+
+def _latest_assistant_response_index(messages: list[dict]) -> int | None:
+    if not messages or messages[-1].get("role") != "assistant":
+        return None
+    if not any(m.get("role") == "user" for m in messages[:-1]):
+        return None
+    return len(messages) - 1
 
 
 def render():
@@ -130,7 +172,7 @@ def render():
     scenario_details = {s["name"]: s for s in scenarios}
     if appstate.state.current_scenario not in scenario_names:
         appstate.state.current_scenario = scenario_names[0] if scenario_names else None
-    page = {"chat": None}
+    page = {"chat": None, "refresh_context": lambda: None}
 
     def generation_for_chat(chat_id: str | None) -> dict | None:
         return appstate.state.generations.get(chat_id or "")
@@ -185,6 +227,16 @@ def render():
         backdrop.classes(add="tg-open")
 
     # ── Transcript rendering (container-based so we can stream into one msg) ──
+    def render_reply_actions():
+        with ui.row().classes("w-full gap-2 no-wrap items-start pb-2"):
+            ui.element("div").classes("w-16 shrink-0")
+            ui.button("Regenerate", icon="refresh", on_click=regenerate_last) \
+                .props("flat dense color=secondary") \
+                .classes("text-xs")
+            ui.button("Edit", icon="edit", on_click=edit_last_response) \
+                .props("flat dense color=secondary") \
+                .classes("text-xs")
+
     def render_messages():
         msgs_col.clear()
         page["inner"] = None
@@ -200,13 +252,24 @@ def render():
             page["inner"] = inner
             with inner:
                 generation = generation_for_chat(chat.get("id"))
+                regenerate_index = (
+                    None if generation
+                    else _latest_assistant_response_index(chat.get("messages", []))
+                )
                 for i, m in enumerate(chat["messages"]):
                     md = _message(m, on_scenario_click=open_scenario)
                     if generation and i == generation["assistant_index"]:
                         page["stream_md"] = md
+                    if i == regenerate_index:
+                        render_reply_actions()
 
     def scroll_bottom():
         transcript_scroll.scroll_to(percent=1.0)
+
+    async def scroll_bottom_after_render():
+        await asyncio.sleep(0.05)
+        if not transcript_scroll.is_deleted:
+            scroll_bottom()
 
     def observing(generation: dict) -> bool:
         """True while this page is still showing the chat this generation feeds."""
@@ -216,16 +279,20 @@ def render():
 
     async def observe_generation(generation: dict):
         """Mirror a running generation into the transcript until it finishes."""
+        last_text = None
         try:
             while not generation["done"]:
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(0.1)
                 if not observing(generation):
                     return
                 md = page.get("stream_md")
                 if md is None or md.is_deleted:
                     return
-                md.content = generation["assistant"].get("text", "")
-                scroll_bottom()
+                text = generation["assistant"].get("text", "")
+                if text != last_text:
+                    md.content = text
+                    scroll_bottom()
+                    last_text = text
 
             if not observing(generation):
                 return
@@ -233,8 +300,14 @@ def render():
             md = page.get("stream_md")
             if md is not None and not md.is_deleted:
                 md.content = assistant.get("text") or "_(no output)_"
-            if _finish_warning(assistant.get("finish_reason")):
+            if _message_warning(assistant):
                 render_messages()  # re-render to hang the warning badge off the bubble
+            elif (
+                _latest_assistant_response_index(generation["chat"].get("messages", []))
+                == generation["assistant_index"]
+            ):
+                with page["inner"]:
+                    render_reply_actions()
             scroll_bottom()
             chat_list.refresh()
             if generation["error"]:
@@ -261,11 +334,14 @@ def render():
         render_messages()
         chat_list.refresh()
         watch_generation(chat["id"] if chat else None)
+        page["refresh_context"]()
+        asyncio.create_task(scroll_bottom_after_render())
 
     def load_chat(chat_id: str):
         show_chat(load_chat_state(chat_id))
 
     pending_delete = {"chat": None}
+    pending_edit = {"chat": None, "index": None}
 
     with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3").style("width:420px;max-width:92vw"):
         delete_label = ui.label().classes("text-sm leading-relaxed")
@@ -274,6 +350,16 @@ def render():
             ui.button("Delete", icon="delete",
                       on_click=lambda: (delete_dialog.close(), delete_pending_chat())) \
                 .props("color=negative unelevated")
+
+    with ui.dialog() as edit_dialog, ui.card().classes("p-5 gap-3").style("width:720px;max-width:92vw"):
+        ui.label("Edit Response").classes("text-lg font-semibold")
+        edit_box = ui.textarea() \
+            .props("filled autogrow input-style=max-height:60vh") \
+            .classes("w-full tg-field")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=edit_dialog.close).props("flat")
+            ui.button("Save", icon="save", on_click=lambda: save_edited_response()) \
+                .props("color=primary unelevated")
 
     def ask_delete_chat(chat: dict):
         pending_delete["chat"] = chat
@@ -297,6 +383,53 @@ def render():
         else:
             chat_list.refresh()
 
+    def edit_last_response():
+        chat = page["chat"]
+        if not chat:
+            return
+        if generation_for_chat(chat["id"]):
+            ui.notify("Wait for the current reply to finish.", type="warning")
+            return
+        index = _latest_assistant_response_index(chat.get("messages", []))
+        if index is None:
+            ui.notify("Only the latest assistant reply can be edited.", type="warning")
+            return
+        pending_edit["chat"] = chat
+        pending_edit["index"] = index
+        edit_box.value = chat["messages"][index].get("text", "")
+        edit_dialog.open()
+
+    def save_edited_response():
+        chat = pending_edit.get("chat")
+        index = pending_edit.get("index")
+        text = (edit_box.value or "").strip()
+        if not chat or index is None:
+            edit_dialog.close()
+            return
+        if not text:
+            ui.notify("Response text can't be empty.", type="warning")
+            return
+        if generation_for_chat(chat["id"]):
+            ui.notify("Wait for the current reply to finish.", type="warning")
+            return
+        latest_index = _latest_assistant_response_index(chat.get("messages", []))
+        if latest_index != index:
+            ui.notify("Only the latest assistant reply can be edited.", type="warning")
+            edit_dialog.close()
+            return
+        message = chat["messages"][index]
+        message["text"] = text
+        message.pop("finish_reason", None)
+        message.pop("generation_error", None)
+        store.save_chat(chat)
+        pending_edit["chat"] = None
+        pending_edit["index"] = None
+        edit_dialog.close()
+        if page["chat"] and page["chat"].get("id") == chat.get("id"):
+            show_chat(chat)
+        else:
+            chat_list.refresh()
+
     def new_chat():
         scenario = appstate.state.current_scenario
         opening_text = scenario_details.get(scenario, {}).get("opening_text")
@@ -306,8 +439,26 @@ def render():
         appstate.state.current_scenario = name
         show_chat(first_chat(name))
 
+    def start_assistant_reply(chat: dict, scenario: str | None):
+        if page.get("inner") is None or page["inner"].is_deleted:
+            render_messages()
+        inner = page.get("inner")
+        api = _api_messages(chat, scenario, scenario_details)
+        model_name = engine.server.model or appstate.state.current_model
+        assistant = {"role": "assistant", "name": scenario, "text": "", "model": model_name}
+        chat["messages"].append(assistant)
+        store.save_chat(chat)
+        with inner:
+            md = _message(assistant, on_scenario_click=open_scenario)
+            page["stream_md"] = md
+
+        _start_generation(chat, api, assistant, dict(appstate.state.current_params))
+        watch_generation(chat["id"])
+        scroll_bottom()
+        page["refresh_context"]()
+
     def send():
-        text = (input_box.value or "").strip()
+        text = _normalize_user_markdown(input_box.value or "")
         if not text:
             return
         if not engine.server.running:
@@ -326,18 +477,28 @@ def render():
         input_box.value = ""
         render_messages()
         scroll_bottom()
+        start_assistant_reply(chat, scenario)
 
-        api = _api_messages(chat, scenario, scenario_details)
-        model_name = engine.server.model or appstate.state.current_model
-        assistant = {"role": "assistant", "name": scenario, "text": "", "model": model_name}
-        chat["messages"].append(assistant)
+    def regenerate_last():
+        chat = page["chat"]
+        if not chat:
+            return
+        if not engine.server.running:
+            ui.notify("Load a model on the Model page first.", type="negative")
+            return
+        if generation_for_chat(chat["id"]):
+            ui.notify("Wait for the current reply to finish.", type="warning")
+            return
+        index = _latest_assistant_response_index(chat.get("messages", []))
+        if index is None:
+            ui.notify("Only the latest assistant reply can be regenerated.", type="warning")
+            return
+        scenario = chat.get("scenario") or appstate.state.current_scenario
+        chat["messages"].pop(index)
         store.save_chat(chat)
-        with page["inner"]:
-            md = _message(assistant, on_scenario_click=open_scenario)
-            page["stream_md"] = md
-
-        _start_generation(chat, api, assistant, dict(appstate.state.current_params))
-        watch_generation(chat["id"])
+        render_messages()
+        scroll_bottom()
+        start_assistant_reply(chat, scenario)
 
     @ui.refreshable
     def chat_list():
@@ -371,11 +532,10 @@ def render():
                 .props("filled").classes("w-full tg-field")
             ui.button("New chat", icon="add", on_click=new_chat) \
                 .props("color=positive unelevated").classes("w-full")
-            with ui.column().classes("flex-1 w-full min-h-0 overflow-y-auto rounded-lg gap-0 p-0") \
-                    .style("background: rgba(52,97,140,0.06)"):
+            with ui.scroll_area().classes("flex-1 w-full min-h-0 tg-list-shell"):
                 chat_list()
 
-        with ui.column().classes("h-full flex-1 no-wrap gap-2"):
+        with ui.column().classes("h-full flex-1 min-w-0 no-wrap gap-2"):
             with ui.scroll_area().classes("flex-1 w-full") as transcript_scroll:
                 msgs_col = ui.column().classes("w-full")
             with ui.row().classes("w-full max-w-3xl mx-auto items-end gap-2 no-wrap"):
@@ -385,6 +545,59 @@ def render():
                 input_box.on("keydown.ctrl.enter", send)
                 ui.button(icon="send", on_click=send) \
                     .props("color=primary unelevated").classes("h-14 w-14")
+
+        with ui.column().classes("h-full w-56 shrink-0 gap-2 p-3 tg-list-shell"):
+            ui.label("CONTEXT").classes("text-xs text-muted tracking-wide")
+            context_counter = ui.badge("Context --") \
+                .props("outline color=secondary") \
+                .classes(
+                    "min-h-8 w-full justify-center px-2 py-1 font-mono text-[11px] "
+                    "whitespace-normal text-center leading-tight"
+                )
+
+    context_state = {"signature": None, "busy": False}
+
+    def context_messages() -> list[dict]:
+        chat = page["chat"] or {"messages": []}
+        messages = _api_messages(chat, appstate.state.current_scenario, scenario_details)
+        draft = _normalize_user_markdown(input_box.value or "")
+        if draft:
+            messages.append({"role": "user", "content": draft})
+        return messages
+
+    async def refresh_context_counter():
+        if input_box.is_deleted or context_counter.is_deleted:
+            context_timer.deactivate()
+            return
+        chat = page["chat"] or {"messages": []}
+        last = chat["messages"][-1].get("text", "") if chat.get("messages") else ""
+        total = _context_total()
+        signature = (
+            appstate.state.current_scenario,
+            chat.get("id"),
+            len(chat.get("messages", [])),
+            last,
+            input_box.value or "",
+            total,
+            engine.server.running,
+            engine.server.model,
+        )
+        if signature == context_state["signature"] or context_state["busy"]:
+            return
+        context_state["signature"] = signature
+        context_state["busy"] = True
+        try:
+            used, exact = await run.io_bound(engine.server.count_chat_tokens, context_messages())
+            context_counter.text = _context_label(used, total, exact)
+        finally:
+            context_state["busy"] = False
+
+    def schedule_context_refresh(_=None):
+        asyncio.create_task(refresh_context_counter())
+
+    page["refresh_context"] = schedule_context_refresh
+    input_box.on_value_change(schedule_context_refresh)
+    context_timer = app.timer(1.0, refresh_context_counter, immediate=False)
 
     # Reopen the chat this browser left off on, so a reload lands back on the
     # one that may still be generating.

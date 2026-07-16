@@ -1,6 +1,6 @@
 """llama.cpp server management + chat streaming.
 
-We reuse textgen's approach: spawn the bundled `llama-server` binary as a
+We reuse textgen's approach: spawn a resolved `llama-server` binary as a
 subprocess and talk to it over HTTP. Generation goes through llama-server's
 OpenAI-compatible `/v1/chat/completions` endpoint, so the model's own chat
 template and sampling are handled by llama.cpp — we just pass messages + params.
@@ -10,6 +10,7 @@ Single model at a time (one subprocess); matches local single-user use.
 
 import atexit
 import json
+import math
 import os
 import shlex
 import signal
@@ -22,9 +23,7 @@ from pathlib import Path
 
 import requests
 
-import llama_cpp_binaries
-
-from thaumaturgy import appstate, metadata_gguf
+from thaumaturgy import appstate, llama_bins, metadata_gguf, store
 from thaumaturgy.paths import sub_dir
 
 SERVER_LOG_LIMIT = 500
@@ -145,14 +144,16 @@ class LlamaServer:
                 pass
 
     def start(self, model_name: str, gpu_layers: int = -1,
-              ctx_size: int = 0, cache_type: str = "fp16") -> None:
+              ctx_size: int = 0, cache_type: str = "fp16",
+              chat_template: str = "auto", reasoning: str = "auto",
+              reasoning_budget: int = -1) -> None:
         self.stop()
         path = models_dir() / model_name
         if not path.exists():
             raise FileNotFoundError(f"Model not found: {path}")
         port = _free_port()
         cmd = [
-            llama_cpp_binaries.get_binary_path(),
+            str(llama_bins.server_path()),
             "-m", str(path),
             "--host", "127.0.0.1", "--port", str(port),
             "-ngl", str(gpu_layers),
@@ -160,6 +161,12 @@ class LlamaServer:
         ]
         if cache_type and cache_type != "fp16":
             cmd += ["-ctk", cache_type, "-ctv", cache_type]
+        if chat_template and chat_template != "auto":
+            cmd += ["--chat-template", chat_template]
+        if reasoning and reasoning != "auto":
+            cmd += ["--reasoning", reasoning]
+        if reasoning_budget != -1:
+            cmd += ["--reasoning-budget", str(reasoning_budget)]
         self._clear_output()
         self._append_output("$ " + " ".join(shlex.quote(str(part)) for part in cmd))
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -176,6 +183,7 @@ class LlamaServer:
         self._wait_ready()
         self._read_props()
         appstate.state.current_model = model_name
+        store.save_last_loaded_model(model_name)
 
     def _wait_ready(self, timeout: float = 300) -> None:
         deadline = time.time() + timeout
@@ -233,6 +241,88 @@ class LlamaServer:
         self.n_ctx = None
         _pidfile().unlink(missing_ok=True)
 
+    @staticmethod
+    def _fallback_chat_prompt(messages: list[dict]) -> str:
+        parts = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            parts.append(f"{role}:\n{content}")
+        parts.append("assistant:\n")
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _token_count_from_json(data) -> int | None:
+        if isinstance(data, list):
+            return len(data)
+        if not isinstance(data, dict):
+            return None
+        for key in ("n_tokens", "num_tokens", "token_count", "count"):
+            value = data.get(key)
+            if isinstance(value, int):
+                return value
+        tokens = data.get("tokens")
+        if isinstance(tokens, list):
+            return len(tokens)
+        if isinstance(tokens, int):
+            return tokens
+        return None
+
+    @staticmethod
+    def _text_from_json(data) -> str | None:
+        if isinstance(data, str):
+            return data
+        if not isinstance(data, dict):
+            return None
+        for key in ("prompt", "content", "text"):
+            value = data.get(key)
+            if isinstance(value, str):
+                return value
+        return None
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        return max(1, math.ceil(len(text) / 4))
+
+    def count_chat_tokens(self, messages: list[dict]) -> tuple[int, bool]:
+        """Return prompt-token usage for a chat, with exactness flag.
+
+        llama-server can apply the active chat template and tokenize the result.
+        If either endpoint is unavailable, fall back to a conservative text
+        estimate so the UI still has a useful context meter before load.
+        """
+        prompt = self._fallback_chat_prompt(messages)
+        if self.running:
+            try:
+                r = requests.post(
+                    f"{self.base_url}/apply-template",
+                    json={"messages": messages, "add_generation_prompt": True},
+                    timeout=10,
+                )
+                r.raise_for_status()
+                data = r.json()
+                count = self._token_count_from_json(data)
+                if count is not None:
+                    return count, True
+                prompt = self._text_from_json(data) or prompt
+            except (requests.RequestException, ValueError, TypeError):
+                pass
+
+            for payload in (
+                {"content": prompt, "add_special": False},
+                {"content": prompt},
+            ):
+                try:
+                    r = requests.post(f"{self.base_url}/tokenize", json=payload, timeout=10)
+                    r.raise_for_status()
+                    count = self._token_count_from_json(r.json())
+                    if count is not None:
+                        return count, True
+                except (requests.RequestException, ValueError, TypeError):
+                    pass
+
+        return self._estimate_tokens(prompt), False
+
     def stream_chat(self, messages: list[dict], params: dict | None = None):
         """Yield streaming chat events from /v1/chat/completions (SSE)."""
         p = params or {}
@@ -250,7 +340,11 @@ class LlamaServer:
         with requests.post(f"{self.base_url}/v1/chat/completions",
                            json=body, stream=True, timeout=600) as r:
             r.raise_for_status()
-            for line in r.iter_lines(decode_unicode=True):
+            for raw_line in r.iter_lines(decode_unicode=False):
+                try:
+                    line = raw_line.decode("utf-8")
+                except UnicodeDecodeError:
+                    line = raw_line.decode("utf-8", errors="replace")
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
