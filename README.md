@@ -2,15 +2,23 @@
 
 <img width="820" height="381" alt="image" src="https://github.com/user-attachments/assets/b47d3aea-2ef6-49ec-8ffa-cd3ca949d9ad" />
 
-A modern, portable, local-LLM chat app: an all-Python [NiceGUI](https://nicegui.io)
-frontend over a GGUF / `llama.cpp` serving core based on Textgen. It rewrites the original's UI
-into a format I find more intuitive, keeps user data portable (plain JSON/YAML —
-no database), and installs cleanly with [uv](https://docs.astral.sh/uv/).
+thaumaturgy is a local-LLM chat app for GGUF models. The UI is built with
+[NiceGUI](https://nicegui.io), model serving uses `llama.cpp`'s `llama-server`,
+and package management is handled by [uv](https://docs.astral.sh/uv/).
+
+It is derived from
+[text-generation-webui](https://github.com/oobabooga/text-generation-webui), but
+has a narrower scope: one local user, GGUF / `llama.cpp` models, scenarios,
+chat history, sampler presets, and model runtime settings. User data is stored
+as plain JSON/YAML files under the data directory. When a model is loaded,
+thaumaturgy starts and manages the `llama-server` subprocess itself; a separate
+server process does not need to be started first. Current text-generation-webui
+also starts `llama-server` internally for its `llama.cpp` loader.
 
 > **Status:** work in progress. Chat, scenario management, model loading, model
-> downloading (with safetensors→GGUF conversion), and persisted parameter sets
-> work today. Tools/MCP, the Notebook view, and the OpenAI/Anthropic API server
-> are not yet ported.
+> downloading, safetensors-to-GGUF conversion, runtime profiles, and persisted
+> sampler presets work today. Tools/MCP, the Notebook view, and the
+> OpenAI/Anthropic API server are not yet ported.
 
 ## Running
 
@@ -27,7 +35,7 @@ The `training` extra (`uv sync --extra training`) adds torch/transformers/etc.,
 used for the safetensors→GGUF conversion path in the model downloader and, later,
 for LoRA training.
 
-## Data & portability
+## Data Files
 
 Everything user-owned lives under the data dir (`./data` by default) as plain
 files: `scenarios/*.yaml`, `chats/*.json`, and `presets.yaml`. Default scenario
