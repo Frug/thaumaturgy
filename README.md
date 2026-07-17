@@ -1,14 +1,16 @@
-# thaumaturgy
+# Thaumaturgy
 
-<img width="820" height="381" alt="image" src="https://github.com/user-attachments/assets/b47d3aea-2ef6-49ec-8ffa-cd3ca949d9ad" />
+<img width="820" height="381" alt="banner" src="https://github.com/user-attachments/assets/b47d3aea-2ef6-49ec-8ffa-cd3ca949d9ad" />
 
-thaumaturgy is a local-LLM chat app for GGUF models. The UI is built with
-[NiceGUI](https://nicegui.io), model serving uses `llama.cpp`'s `llama-server`,
+Thaumaturgy is a local-LLM chat app for GGUF models. The UI is meant to be easy to use for beginners while still giving plenty of control for experimentation.
+
+It's built with [NiceGUI](https://nicegui.io), model serving uses `llama.cpp`'s `llama-server`,
 and package management is handled by [uv](https://docs.astral.sh/uv/).
 
-It is derived from
+Thaumaturgy started because I loved the simplicity of 
 [text-generation-webui](https://github.com/oobabooga/text-generation-webui), but
-has a narrower scope: one local user, GGUF / `llama.cpp` models, scenarios,
+I had a number of nits with the UI I wanted to improve. I wanted managing settings to be quicker and more intuitive (at least for me).
+One local user, GGUF / `llama.cpp` models, scenarios,
 chat history, sampler presets, and model runtime settings. User data is stored
 as plain JSON/YAML files under the data directory. When a model is loaded,
 thaumaturgy starts and manages the `llama-server` subprocess itself; a separate
