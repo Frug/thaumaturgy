@@ -15,6 +15,16 @@ from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine, store
 
+# Matches both dialects: `<|channel>thought` and `<|channel|>analysis<|message|>`.
+# The terminator is required so a name still streaming in ("<|channel>a") isn't
+# read as complete.
+_CHANNEL_MARKER = "<|channel"
+_CHANNEL_RE = re.compile(
+    r"<\|channel\|?>[ \t]*([A-Za-z0-9_.-]+)[ \t]*(?:<\|message\|>|<channel\|>|\r?\n)")
+_CONTROL_RE = re.compile(
+    r"<\|start\|>[ \t]*assistant|<\|(?:start|end|return|message)\|>|<channel\|>")
+_THOUGHT_CHANNELS = {"thought", "thinking", "reasoning", "analysis"}
+
 
 def _rel_time(ts: float | None) -> str:
     if not ts:
@@ -50,8 +60,83 @@ def _message_warning(m: dict) -> str | None:
     return _finish_warning(m.get("finish_reason"))
 
 
-def _message(m: dict, on_scenario_click=None):
-    """Render one message row; returns the markdown element (for live updates)."""
+def _join_blocks(parts: list[str]) -> str:
+    return "\n\n".join(part.strip() for part in parts if part and part.strip()).strip()
+
+
+def _split_reasoning_channels(text: str) -> tuple[str, str]:
+    """Split channel-marked output into visible text and reasoning text.
+
+    Needed for templates llama.cpp can't parse (Gemma's): their markers arrive
+    raw in the reply rather than as reasoning events.
+
+    Both halves are stripped: ui.markdown measures indentation from the first
+    non-empty line and slices that many chars off every line, so a reply opening
+    with llama.cpp's usual leading space loses a character per line below it.
+    """
+    if not text or _CHANNEL_MARKER not in text:
+        return text.strip(), ""
+    matches = list(_CHANNEL_RE.finditer(text))
+    if not matches:
+        return text.strip(), ""
+
+    visible_parts = [_CONTROL_RE.sub("", text[:matches[0].start()])]
+    reasoning_parts = []
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        content = _CONTROL_RE.sub("", text[match.end():end])
+        target = (reasoning_parts if match.group(1).lower() in _THOUGHT_CHANNELS
+                  else visible_parts)
+        target.append(content)
+    return _join_blocks(visible_parts), _join_blocks(reasoning_parts)
+
+
+def _visible_and_reasoning(text: str, reasoning: str) -> tuple[str, str]:
+    """Promote reasoning to the reply when the model produced nothing else.
+
+    Some models put ordinary prose in the thought channel and never open a final
+    one; the bubble would otherwise be empty.
+    """
+    if text.strip():
+        return text, reasoning
+    return reasoning, ""
+
+
+def _message_text_and_reasoning(m: dict) -> tuple[str, str]:
+    text = m.get("text") or ""
+    reasoning = (m.get("reasoning") or "").strip()
+    if m.get("role") == "assistant":
+        text, marker_reasoning = _split_reasoning_channels(text)
+        reasoning = reasoning or marker_reasoning
+    return _visible_and_reasoning(text, reasoning)
+
+
+class _MessageView:
+    """Live handles into one rendered message, so a stream can update it in place.
+
+    The Thinking pane is built up front and hidden because the bubble's slot is
+    closed by the time reasoning arrives — an observer can't add elements then.
+    """
+
+    def __init__(self, text_md, reasoning_box=None, reasoning_md=None):
+        self.text_md = text_md
+        self.reasoning_box = reasoning_box
+        self.reasoning_md = reasoning_md
+
+    @property
+    def is_deleted(self) -> bool:
+        return self.text_md.is_deleted
+
+    def update(self, text: str, reasoning: str) -> None:
+        self.text_md.content = text
+        if self.reasoning_box is None:
+            return
+        self.reasoning_md.content = reasoning
+        self.reasoning_box.set_visibility(bool(reasoning.strip()))
+
+
+def _message(m: dict, on_scenario_click=None) -> _MessageView:
+    """Render one message row; returns handles to it (for live updates)."""
     is_user = m["role"] == "user"
     clickable = (not is_user) and on_scenario_click is not None
     with ui.row().classes("w-full gap-3 no-wrap items-start pb-4"):
@@ -68,12 +153,20 @@ def _message(m: dict, on_scenario_click=None):
         if is_user:
             bubble.style("background: rgba(52,97,140,0.10)")
         with bubble:
-            md = ui.markdown(m.get("text") or "").classes("text-sm leading-relaxed break-words")
+            text, reasoning = _message_text_and_reasoning(m)
+            md = ui.markdown(text).classes("text-sm leading-relaxed break-words")
+            box = reasoning_md = None
+            if not is_user:
+                box = ui.expansion("Thinking", icon="psychology").classes("w-full")
+                with box:
+                    reasoning_md = ui.markdown(reasoning).classes(
+                        "text-xs leading-relaxed break-words text-muted")
+                box.set_visibility(bool(reasoning))
             warning = _message_warning(m)
             if warning:
                 ui.badge(warning).props("color=warning text-color=dark") \
                     .classes("self-start text-xs mt-1")
-    return md
+    return _MessageView(md, box, reasoning_md)
 
 
 def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict) -> dict:
@@ -91,15 +184,29 @@ def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict
 
     def worker():
         last_save = 0.0
+        raw_text = assistant.get("text", "")
+        raw_reasoning = assistant.get("reasoning", "")
         try:
             for event in engine.server.stream_chat(api, params):
-                if event.get("type") == "finish":
+                kind = event.get("type")
+                if kind == "finish":
                     assistant["finish_reason"] = event.get("reason")
                     continue
                 delta = event.get("text", "")
                 if not delta:
                     continue
-                assistant["text"] += delta
+                if kind == "reasoning":
+                    raw_reasoning += delta
+                else:
+                    raw_text += delta
+                text, marker_reasoning = _split_reasoning_channels(raw_text)
+                text, reasoning = _visible_and_reasoning(
+                    text, _join_blocks([raw_reasoning, marker_reasoning]))
+                assistant["text"] = text
+                if reasoning:
+                    assistant["reasoning"] = reasoning
+                else:
+                    assistant.pop("reasoning", None)
                 now = time.monotonic()
                 if now - last_save > 0.5:
                     store.save_chat(chat)
@@ -119,16 +226,50 @@ def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict
     return state
 
 
-def _api_messages(chat: dict, scenario: str, scenario_details: dict) -> list[dict]:
-    messages = []
+def _prepend_to_first_user(messages: list[dict], prefix: str) -> list[dict]:
+    for msg in messages:
+        if msg.get("role") == "user":
+            msg["content"] = f"{prefix}\n\n{msg.get('content', '')}".strip()
+            return messages
+    if prefix:
+        messages.insert(0, {"role": "user", "content": prefix})
+    return messages
+
+
+def _api_messages(chat: dict, scenario: str, scenario_details: dict,
+                  draft: str = "") -> list[dict]:
+    """Build the /v1/chat/completions message list, including any unsent `draft`.
+
+    The draft is folded in here, not appended by the caller: without a system
+    role the scenario merges into the first user turn, which may be the draft.
+    """
     details = scenario_details.get(scenario, {})
-    context = details.get("context")
+    system_parts = []
+    context = (details.get("context") or "").strip()
     if context:
-        messages.append({"role": "system", "content": context})
-    for m in chat["messages"]:
+        system_parts.append(context)
+    chat_messages = list(chat.get("messages", []))
+    # Gemma-style templates raise on a leading assistant turn, and no
+    # chat_template_caps flag reports it — so the opening always moves to the prompt.
+    while chat_messages and chat_messages[0].get("role") != "user":
+        opening = (chat_messages.pop(0).get("text") or "").strip()
+        if opening:
+            system_parts.append(f"Opening scene:\n{opening}")
+    messages = []
+    for m in chat_messages:
+        text = (m.get("text") or "").strip()
+        if not text and m.get("generation_error"):
+            continue
         role = "user" if m["role"] == "user" else "assistant"
         messages.append({"role": role, "content": m.get("text", "")})
-    return messages
+    if draft:
+        messages.append({"role": "user", "content": draft})
+    system_content = "\n\n".join(system_parts).strip()
+    if not system_content:
+        return messages
+    if engine.server.supports_system_role():
+        return [{"role": "system", "content": system_content}, *messages]
+    return _prepend_to_first_user(messages, system_content)
 
 
 def _context_total(model_name: str | None = None) -> int | None:
@@ -240,7 +381,7 @@ def render():
     def render_messages():
         msgs_col.clear()
         page["inner"] = None
-        page["stream_md"] = None
+        page["stream_view"] = None
         with msgs_col:
             chat = page["chat"]
             if not chat:
@@ -257,9 +398,9 @@ def render():
                     else _latest_assistant_response_index(chat.get("messages", []))
                 )
                 for i, m in enumerate(chat["messages"]):
-                    md = _message(m, on_scenario_click=open_scenario)
+                    view = _message(m, on_scenario_click=open_scenario)
                     if generation and i == generation["assistant_index"]:
-                        page["stream_md"] = md
+                        page["stream_view"] = view
                     if i == regenerate_index:
                         render_reply_actions()
 
@@ -279,27 +420,29 @@ def render():
 
     async def observe_generation(generation: dict):
         """Mirror a running generation into the transcript until it finishes."""
-        last_text = None
+        last = None
         try:
             while not generation["done"]:
                 await asyncio.sleep(0.1)
                 if not observing(generation):
                     return
-                md = page.get("stream_md")
-                if md is None or md.is_deleted:
+                view = page.get("stream_view")
+                if view is None or view.is_deleted:
                     return
-                text = generation["assistant"].get("text", "")
-                if text != last_text:
-                    md.content = text
+                assistant = generation["assistant"]
+                current = (assistant.get("text", ""), assistant.get("reasoning", ""))
+                if current != last:
+                    view.update(*current)
                     scroll_bottom()
-                    last_text = text
+                    last = current
 
             if not observing(generation):
                 return
             assistant = generation["assistant"]
-            md = page.get("stream_md")
-            if md is not None and not md.is_deleted:
-                md.content = assistant.get("text") or "_(no output)_"
+            view = page.get("stream_view")
+            if view is not None and not view.is_deleted:
+                view.update(assistant.get("text") or "_(no output)_",
+                            assistant.get("reasoning", ""))
             if _message_warning(assistant):
                 render_messages()  # re-render to hang the warning badge off the bubble
             elif (
@@ -421,6 +564,7 @@ def render():
         message["text"] = text
         message.pop("finish_reason", None)
         message.pop("generation_error", None)
+        message.pop("reasoning", None)
         store.save_chat(chat)
         pending_edit["chat"] = None
         pending_edit["index"] = None
@@ -449,8 +593,7 @@ def render():
         chat["messages"].append(assistant)
         store.save_chat(chat)
         with inner:
-            md = _message(assistant, on_scenario_click=open_scenario)
-            page["stream_md"] = md
+            page["stream_view"] = _message(assistant, on_scenario_click=open_scenario)
 
         _start_generation(chat, api, assistant, dict(appstate.state.current_params))
         watch_generation(chat["id"])
@@ -559,11 +702,8 @@ def render():
 
     def context_messages() -> list[dict]:
         chat = page["chat"] or {"messages": []}
-        messages = _api_messages(chat, appstate.state.current_scenario, scenario_details)
-        draft = _normalize_user_markdown(input_box.value or "")
-        if draft:
-            messages.append({"role": "user", "content": draft})
-        return messages
+        return _api_messages(chat, appstate.state.current_scenario, scenario_details,
+                             draft=_normalize_user_markdown(input_box.value or ""))
 
     async def refresh_context_counter():
         if input_box.is_deleted or context_counter.is_deleted:
@@ -581,6 +721,7 @@ def render():
             total,
             engine.server.running,
             engine.server.model,
+            engine.server.supports_system_role(),
         )
         if signature == context_state["signature"] or context_state["busy"]:
             return
