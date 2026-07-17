@@ -24,6 +24,8 @@ REASONING_MODES = {
 # Quantization targets offered in the download dialog (llama-quantize names).
 QUANT_TYPES = ["Q3_K_M", "Q4_K_S", "Q4_K_M", "Q5_K_M", "Q6_K", "Q8_0"]
 DEFAULT_QUANT = "Q4_K_M"
+ALL_QUANTS = "__all__"
+UNKNOWN_QUANT = "__unknown__"
 
 CTX_HELP = (
     "Context length. 0 = auto for llama.cpp (requires gpu-layers=-1), 8192 for "
@@ -65,8 +67,9 @@ def _slider_row(label: str, minv, maxv, step, value, decimals: int, on_change=No
 
 
 def _file_size_gb(name: str) -> float:
+    """Size of a whole model — every shard, not just the part named."""
     try:
-        return (engine.models_dir() / name).stat().st_size / 1e9
+        return sum(p.stat().st_size for p in engine.model_files(name)) / 1e9
     except OSError:
         return 0.0
 
@@ -84,7 +87,10 @@ def _runtime_load_args(vals: dict) -> tuple[int, int, str, str, str, int]:
     if reasoning not in REASONING_MODES:
         reasoning = "auto"
     reasoning_budget = int(vals.get("reasoning_budget", -1))
-    return gpu_layers, ctx_size, cache_type, chat_template, reasoning, reasoning_budget
+    budget_message = str(vals.get("reasoning_budget_message",
+                                  store.DEFAULT_REASONING_BUDGET_MESSAGE))
+    return (gpu_layers, ctx_size, cache_type, chat_template, reasoning,
+            reasoning_budget, budget_message)
 
 
 def _runtime_gpu_label(vals: dict) -> str:
@@ -118,6 +124,32 @@ def _runtime_reasoning_budget_label(vals: dict) -> str:
     return f"{budget:,} tokens"
 
 
+def _runtime_budget_message_label(vals: dict) -> str:
+    if int(vals.get("reasoning_budget", -1)) <= 0:
+        return "unused"
+    message = str(vals.get("reasoning_budget_message", "")).strip()
+    if not message:
+        return "none (abrupt cutoff)"
+    return f'"{message}"' if len(message) <= 40 else f'"{message[:37]}..."'
+
+
+def _quant_filter_options(variants: list[dict]) -> dict[str, str]:
+    options = {ALL_QUANTS: "All quantizations"}
+    quants = sorted({v["quant"] for v in variants if v.get("quant")})
+    options.update({q: q for q in quants})
+    if any(not v.get("quant") for v in variants):
+        options[UNKNOWN_QUANT] = "Unknown"
+    return options
+
+
+def _filtered_variants(variants: list[dict], quant: str | None) -> list[dict]:
+    if not quant or quant == ALL_QUANTS:
+        return variants
+    if quant == UNKNOWN_QUANT:
+        return [v for v in variants if not v.get("quant")]
+    return [v for v in variants if v.get("quant") == quant]
+
+
 def _model_card(bridge):
     models = engine.list_models()
 
@@ -130,55 +162,157 @@ def _model_card(bridge):
             ui.label("Model").classes("text-lg font-semibold")
             ui.badge("llama.cpp").props("color=secondary").classes("font-mono")
 
-        if models:
-            model = ui.select(options=models, value=appstate.state.current_model
-                              if appstate.state.current_model in models else models[0]) \
-                .classes("w-full tg-field").props("filled")
-        else:
-            model = ui.select(options=["(no models found)"], value="(no models found)") \
-                .classes("w-full tg-field").props("filled")
-            model.disable()
+        with ui.row().classes("w-full items-center gap-2 no-wrap"):
+            if models:
+                model = ui.select(options=models, value=appstate.state.current_model
+                                  if appstate.state.current_model in models else models[0]) \
+                    .classes("tg-field").props("filled").style("flex:1;min-width:0")
+            else:
+                model = ui.select(options=["(no models found)"], value="(no models found)") \
+                    .classes("tg-field").props("filled").style("flex:1;min-width:0")
+                model.disable()
+            delete_btn = ui.button(icon="delete") \
+                .props("flat dense color=negative").tooltip("Delete this model from disk")
+        if not models:
             ui.label(f"Put .gguf files in {engine.models_dir()}").classes("text-xs text-muted")
+            delete_btn.disable()
         bridge["model_select"] = model
+
+        # ── Delete-model confirmation ────────────────────────────────────────
+        with ui.dialog() as del_dialog, ui.card().classes("p-5 gap-3") \
+                .style("width:560px;max-width:92vw"):
+            ui.label("Delete model").classes("text-lg font-semibold")
+            del_text = ui.label().classes("text-sm leading-relaxed")
+            del_files = ui.label().classes("text-xs text-muted font-mono leading-snug")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=del_dialog.close).props("flat")
+                del_ok = ui.button("Delete", icon="delete") \
+                    .props("color=negative unelevated")
+
+        def selected_model() -> str | None:
+            v = model.value
+            return v if v and not v.startswith("(") else None
+
+        def refresh_models(value: str | None = None) -> None:
+            names = engine.list_models()
+            if names:
+                model.set_options(names, value=value if value in names else names[0])
+                model.enable()
+                delete_btn.enable()
+                appstate.state.current_model = model.value
+                bridge["select_model_defaults"](model.value)
+            else:
+                model.set_options(["(no models found)"], value="(no models found)")
+                model.disable()
+                delete_btn.disable()
+                appstate.state.current_model = None
+            refresh_status()
+            refresh_preview()
+
+        def ask_delete() -> None:
+            name = selected_model()
+            if not name:
+                return
+            files = engine.model_files(name)
+            if not files:
+                ui.notify(f"{name} is already gone.", type="warning")
+                refresh_models()
+                return
+            total = sum(f.stat().st_size for f in files)
+            del_text.text = (
+                f"Permanently delete {name}? This frees "
+                f"{hf_download.human_size(total)} and cannot be undone.")
+            # Spell out the whole shard set: the name alone doesn't say that
+            # deleting one part takes the others with it.
+            del_files.text = ("\n".join(f.name for f in files)
+                              if len(files) > 1 else "")
+            del_dialog.open()
+
+        def do_delete() -> None:
+            del_dialog.close()
+            name = selected_model()
+            if not name:
+                return
+            try:
+                removed = engine.delete_model(name)
+            except RuntimeError as exc:
+                ui.notify(str(exc), type="negative")
+                return
+            ui.notify(f"Deleted {', '.join(removed)}", type="positive")
+            refresh_models()
+
+        delete_btn.on_click(ask_delete)
+        del_ok.on_click(do_delete)
         if models:
             appstate.state.current_model = model.value
             bridge["select_model_defaults"](model.value, update_selectors=False)
 
         # ── Download-model dialog ────────────────────────────────────────────
-        with ui.dialog() as dl_dialog, ui.card().classes("p-5 gap-3").style("width:520px;max-width:92vw"):
+        with ui.dialog() as dl_dialog, ui.card().classes("p-5 gap-3") \
+                .style("width:820px;max-width:94vw"):
             ui.label("Download model").classes("text-lg font-semibold")
-            ui.label("Paste a Hugging Face model URL. If the repo only has "
-                     "safetensors, it will be converted and quantized to GGUF.") \
+            ui.label("Paste a Hugging Face model URL. A repo that already has "
+                     "GGUFs lists them to pick from; one with only safetensors "
+                     "is converted and quantized.") \
                 .classes("text-xs text-muted leading-snug")
             dl_url = ui.input(label="Hugging Face URL",
                               placeholder="https://huggingface.co/owner/model") \
-                .props("filled").classes("w-full tg-field")
-            dl_quant = ui.select(options=QUANT_TYPES, value=DEFAULT_QUANT,
-                                 label="Quantization") \
-                .props("filled").classes("w-full tg-field")
+                .props("filled clearable debounce=600").classes("w-full tg-field")
             dl_status = ui.label().classes("text-xs text-muted")
-            with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=dl_dialog.close).props("flat")
-                dl_go = ui.button("Download New Model", icon="download") \
+            with ui.row().classes("w-full items-end gap-2") as dl_filter_row:
+                dl_quant_filter = ui.select(
+                    options={ALL_QUANTS: "All quantizations"},
+                    value=ALL_QUANTS,
+                    label="Quantization",
+                ).props("filled").classes("tg-field").style("min-width:220px")
+            dl_filter_row.set_visibility(False)
+            # Filled in by the lookup: one row per GGUF variant, or the
+            # quant picker when the repo has none to choose from.
+            dl_variants = ui.column().classes("w-full gap-1")
+            with ui.row().classes("w-full items-end gap-2") as dl_convert_row:
+                dl_quant = ui.select(options=QUANT_TYPES, value=DEFAULT_QUANT,
+                                     label="Quantization") \
+                    .props("filled").classes("tg-field").style("min-width:180px")
+                dl_go = ui.button("Convert & Download", icon="download") \
                     .props("color=positive unelevated")
+            dl_convert_row.set_visibility(False)
+            with ui.row().classes("w-full justify-end gap-2"):
+                dl_close = ui.button("Close", on_click=dl_dialog.close).props("flat")
 
         def refresh_preview():
             if "refresh_preview" in bridge:
                 bridge["refresh_preview"]()
 
-        async def do_download():
-            url = (dl_url.value or "").strip()
-            if not url:
-                dl_status.text = "Enter a Hugging Face URL first."
+        # variant_buttons is rebuilt by render_variants; a job disables every
+        # button so a second one can't start on top of the first.
+        dl_state: dict = {
+            "repo_id": None,
+            "busy": False,
+            "variant_buttons": [],
+            "variants": [],
+        }
+
+        def set_busy(busy: bool) -> None:
+            dl_state["busy"] = busy
+            dl_url.set_enabled(not busy)
+            dl_quant_filter.set_enabled(not busy)
+            for btn in [dl_go, *dl_state["variant_buttons"]]:
+                btn.set_enabled(not busy)
+
+        async def run_job(fn, *args):
+            """Run one download/convert job, mirroring its progress into the dialog.
+
+            Close stays live throughout — these run for tens of minutes — so the
+            busy flag is what stops a second job stacking on the first.
+            """
+            if dl_state["busy"]:
                 return
             prog = {"msg": "Starting…"}
             timer = ui.timer(0.3, lambda: setattr(dl_status, "text", prog["msg"]))
-            dl_go.props("loading")
-            dl_go.disable()
+            set_busy(True)
             try:
                 name = await run.io_bound(
-                    hf_download.download, url, dl_quant.value,
-                    lambda m: prog.__setitem__("msg", m))
+                    fn, *args, lambda m: prog.__setitem__("msg", m))
                 ui.notify(f"Downloaded {name}", type="positive")
                 model.set_options(engine.list_models(), value=name)
                 model.enable()
@@ -191,11 +325,83 @@ def _model_card(bridge):
                 prog["msg"] = f"Failed: {exc}"
                 ui.notify(f"Download failed: {exc}", type="negative")
             finally:
+                # Render once more by hand: the timer is what was painting
+                # prog, so stopping it first would strand the last message
+                # (a failure, usually) behind whatever it painted before.
                 timer.deactivate()
-                dl_go.props(remove="loading")
-                dl_go.enable()
+                dl_status.text = prog["msg"]
+                set_busy(False)
 
-        dl_go.on_click(do_download)
+        def render_variants() -> None:
+            variants = _filtered_variants(dl_state["variants"], dl_quant_filter.value)
+            dl_variants.clear()
+            dl_state["variant_buttons"] = []
+            with dl_variants:
+                ui.label(f"{len(variants)} GGUF variant"
+                         f"{'s' if len(variants) != 1 else ''} — pick one:") \
+                    .classes("text-xs text-muted")
+                # Repos routinely ship 20+ cuts, so cap the height and scroll.
+                with ui.column().classes("w-full gap-1") \
+                        .style("max-height:340px;overflow-y:auto"):
+                    for v in variants:
+                        with ui.row().classes("w-full items-center gap-3 p-2 rounded-lg") \
+                                .style("background: rgba(52,97,140,0.08)"):
+                            ui.label(v["label"]).classes("text-sm font-mono truncate") \
+                                .style("flex:1;min-width:0").tooltip(v["label"])
+                            if v["quant"]:
+                                ui.badge(v["quant"]).props("color=primary")
+                            if len(v["files"]) > 1:
+                                ui.badge(f"{len(v['files'])} shards").props("color=grey-7")
+                            ui.label(hf_download.human_size(v["size"])) \
+                                .classes("text-xs text-muted font-mono")
+                            dl_state["variant_buttons"].append(ui.button(
+                                "Download", icon="download",
+                                on_click=lambda _e, files=v["files"]: run_job(
+                                    hf_download.fetch_variant,
+                                    dl_state["repo_id"], files),
+                            ).props("dense unelevated color=positive"))
+
+        async def do_lookup():
+            if dl_state["busy"]:
+                return
+            dl_variants.clear()
+            dl_convert_row.set_visibility(False)
+            dl_filter_row.set_visibility(False)
+            dl_state["repo_id"] = None
+            dl_state["variants"] = []
+            url = (dl_url.value or "").strip()
+            if not url:
+                dl_status.text = ""
+                return
+            try:
+                repo_id = hf_download.parse_repo_id(url)
+            except ValueError:
+                dl_status.text = "Paste a full Hugging Face model URL (owner/model)."
+                return
+            dl_status.text = f"Looking up {repo_id}…"
+            try:
+                info = await run.io_bound(hf_download.probe, url)
+            except Exception as exc:  # noqa: BLE001 - surface any lookup failure
+                dl_status.text = f"Lookup failed: {exc}"
+                return
+            dl_state["repo_id"] = info["repo_id"]
+            if info["variants"]:
+                dl_status.text = info["repo_id"]
+                dl_state["variants"] = info["variants"]
+                options = _quant_filter_options(info["variants"])
+                default_quant = DEFAULT_QUANT if DEFAULT_QUANT in options else ALL_QUANTS
+                dl_quant_filter.set_options(options, value=default_quant)
+                dl_filter_row.set_visibility(True)
+                render_variants()
+            else:
+                dl_status.text = (f"{info['repo_id']} ships no GGUF — it will be "
+                                  "converted and quantized, which takes a while.")
+                dl_convert_row.set_visibility(True)
+
+        dl_url.on_value_change(do_lookup)
+        dl_quant_filter.on_value_change(lambda _e: render_variants())
+        dl_go.on_click(lambda: run_job(hf_download.convert,
+                                       (dl_url.value or "").strip(), dl_quant.value))
 
         with ui.row().classes("w-full gap-2 mb-4"):
             load_btn = ui.button("Load model", icon="play_arrow") \
@@ -292,13 +498,13 @@ def _model_card(bridge):
 
         async def run_load(current_model: str, gpu_layers: int, ctx_size: int,
                            cache_type: str, chat_template: str, reasoning: str,
-                           reasoning_budget: int):
+                           reasoning_budget: int, reasoning_budget_message: str):
             load_btn.props("loading")
             ui.notify(f"Loading {current_model}…")
             try:
                 await run.io_bound(engine.server.start, current_model, gpu_layers,
                                    ctx_size, cache_type, chat_template, reasoning,
-                                   reasoning_budget)
+                                   reasoning_budget, reasoning_budget_message)
                 ui.notify(f"Loaded {current_model}")
             except Exception as exc:  # noqa: BLE001 - surface any startup failure
                 ui.notify(f"Load failed: {exc}", type="negative")
@@ -319,7 +525,8 @@ def _model_card(bridge):
             if not current_model:
                 ui.notify("No models in the models folder", type="negative")
                 return
-            gpu_layers, ctx_size, cache_type, chat_template, reasoning, reasoning_budget = (
+            (gpu_layers, ctx_size, cache_type, chat_template, reasoning,
+             reasoning_budget, budget_message) = (
                 _runtime_load_args(bridge["active_runtime"]()))
             max_layers = engine.max_gpu_layers(current_model)
             if max_layers is not None and gpu_layers > max_layers:
@@ -332,6 +539,7 @@ def _model_card(bridge):
                     "chat_template": chat_template,
                     "reasoning": reasoning,
                     "reasoning_budget": reasoning_budget,
+                    "reasoning_budget_message": budget_message,
                 })
                 gpu_layers_warning.text = (
                     f"The selected runtime profile requests {gpu_layers} GPU layers, "
@@ -340,7 +548,7 @@ def _model_card(bridge):
                 gpu_layers_dialog.open()
                 return
             await run_load(current_model, gpu_layers, ctx_size, cache_type,
-                           chat_template, reasoning, reasoning_budget)
+                           chat_template, reasoning, reasoning_budget, budget_message)
 
         load_btn.on_click(load)
 
@@ -425,6 +633,8 @@ def render():
         if vals.get("reasoning") not in REASONING_MODES:
             vals["reasoning"] = "auto"
         vals["reasoning_budget"] = int(vals.get("reasoning_budget", -1))
+        vals["reasoning_budget_message"] = str(
+            vals.get("reasoning_budget_message", store.DEFAULT_REASONING_BUDGET_MESSAGE))
         return vals
 
     def active_runtime():
@@ -743,6 +953,7 @@ def render():
                     summary_row("Chat template", _runtime_chat_template_label(runtime))
                     summary_row("Reasoning", _runtime_reasoning_label(runtime))
                     summary_row("Reasoning budget", _runtime_reasoning_budget_label(runtime))
+                    summary_row("Budget message", _runtime_budget_message_label(runtime))
                     summary_row("Estimated VRAM", vram_label(runtime))
 
                 ui.separator()
@@ -833,7 +1044,17 @@ def render():
                                                      value=vals.get("reasoning_budget", -1),
                                                      min=-1, step=128) \
                 .classes("w-full tg-field").props("filled")
-            ui.label("-1 = unrestricted. 0 = immediate end of thinking.") \
+            ui.label("-1 = unrestricted. 0 = immediate end of thinking. Above 0, "
+                     "Max new tokens is added on top for the reply itself.") \
+                .classes("text-xs text-muted leading-snug")
+            controls["reasoning_budget_message"] = ui.input(
+                label="Reasoning budget message",
+                value=vals.get("reasoning_budget_message",
+                               store.DEFAULT_REASONING_BUDGET_MESSAGE)) \
+                .classes("w-full tg-field").props("filled")
+            ui.label("The model's last thought before a spent budget cuts it off, in "
+                     "its own voice, so it wraps up instead of stopping mid-sentence. "
+                     "Only used when the budget is above 0.") \
                 .classes("text-xs text-muted leading-snug")
 
             with ui.row().classes("w-full items-center gap-2 mt-1 p-3 rounded-lg") \
@@ -851,6 +1072,8 @@ def render():
                     "chat_template": controls["chat_template"].value,
                     "reasoning": controls["reasoning"].value,
                     "reasoning_budget": int(budget if budget is not None else -1),
+                    "reasoning_budget_message":
+                        (controls["reasoning_budget_message"].value or "").strip(),
                 }
                 persist_runtime()
                 vram.text = vram_label(runtime_sets[state["runtime_editing"]])

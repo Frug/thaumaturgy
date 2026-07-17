@@ -25,8 +25,31 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def _chat_path(chat_id: str):
-    return chats_dir() / f"{chat_id}.json"
+def _chat_group_dir_name(scenario: str | None) -> str:
+    name = scenario or ""
+    safe = "".join(c if (c.isalnum() or c in " .-_") else "_" for c in name).strip(" .")
+    return safe or "unknown_scenario"
+
+
+def _chat_path(chat_id: str, scenario: str | None):
+    return chats_dir() / _chat_group_dir_name(scenario) / f"{chat_id}.json"
+
+
+def _chat_paths(chat_id: str) -> list[Path]:
+    """Every file holding this chat: its scenario dir, plus any stale location.
+
+    rglob covers chats_dir() itself, so ungrouped legacy chats are found too.
+    """
+    return sorted(chats_dir().rglob(f"{chat_id}.json"))
+
+
+def _find_chat_path(chat_id: str) -> Path | None:
+    paths = _chat_paths(chat_id)
+    return paths[0] if paths else None
+
+
+def _all_chat_files() -> list[Path]:
+    return sorted(chats_dir().rglob("*.json"))
 
 
 def _title_from(messages: list[dict]) -> str:
@@ -42,7 +65,7 @@ def new_chat(scenario: str | None, model: str | None,
     now = time.time()
     chat_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     # Avoid collisions if two chats start within the same second.
-    while _chat_path(chat_id).exists():
+    while _find_chat_path(chat_id):
         now += 1
         chat_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     chat = {
@@ -63,12 +86,24 @@ def new_chat(scenario: str | None, model: str | None,
 def save_chat(chat: dict) -> None:
     chat["updated"] = time.time()
     chat["title"] = _title_from(chat.get("messages", []))
-    _write_atomic(_chat_path(chat["id"]),
+    target = _chat_path(chat["id"], chat.get("scenario"))
+    # Stale copies only exist right after a chat moves, and this runs twice a
+    # second while streaming — so skip the tree walk once it's settled.
+    settled = target.exists()
+    if not settled:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(target,
                   json.dumps(chat, indent=2, ensure_ascii=False))
+    if not settled:
+        for old in _chat_paths(chat["id"]):
+            if old != target:
+                old.unlink(missing_ok=True)
 
 
 def load_chat(chat_id: str) -> dict | None:
-    p = _chat_path(chat_id)
+    p = _find_chat_path(chat_id)
+    if p is None:
+        return None
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError):
@@ -77,7 +112,7 @@ def load_chat(chat_id: str) -> dict | None:
 
 def list_chats(scenario: str | None = None) -> list[dict]:
     out = []
-    for p in chats_dir().glob("*.json"):
+    for p in _all_chat_files():
         try:
             c = json.loads(p.read_text(encoding="utf-8"))
         except (ValueError, OSError):
@@ -89,9 +124,8 @@ def list_chats(scenario: str | None = None) -> list[dict]:
 
 
 def delete_chat(chat_id: str) -> None:
-    p = _chat_path(chat_id)
-    if p.exists():
-        p.unlink()
+    for p in _chat_paths(chat_id):
+        p.unlink(missing_ok=True)
 
 
 # ── App config ──────────────────────────────────────────────────────────────
@@ -250,6 +284,12 @@ def save_presets(doc: dict) -> None:
 # GPU layers, requested context size, KV-cache type, chat template override, and
 # llama.cpp reasoning controls.
 
+# Injected as the model's own last thought before the forced end-of-thinking
+# tag, so it has to read in its voice. Wording follows vLLM's; llama.cpp ships
+# no default. Only the graceful-vs-abrupt handoff is well evidenced, not this
+# phrasing over another.
+DEFAULT_REASONING_BUDGET_MESSAGE = "Let me stop thinking and answer now."
+
 BUILTIN_RUNTIME_PROFILES = {
     "Default": dict(
         gpu_layers=-1,
@@ -258,6 +298,7 @@ BUILTIN_RUNTIME_PROFILES = {
         chat_template="auto",
         reasoning="auto",
         reasoning_budget=-1,
+        reasoning_budget_message=DEFAULT_REASONING_BUDGET_MESSAGE,
     ),
 }
 DEFAULT_RUNTIME_PROFILE = "Default"
@@ -300,6 +341,7 @@ def load_runtime_profiles() -> dict:
         vals.setdefault("chat_template", "auto")
         vals.setdefault("reasoning", "auto")
         vals.setdefault("reasoning_budget", -1)
+        vals.setdefault("reasoning_budget_message", DEFAULT_REASONING_BUDGET_MESSAGE)
         changed = changed or vals != before
     order = [n for n in (doc.get("order") or list(sets)) if n in sets]
     order += [n for n in sets if n not in order]

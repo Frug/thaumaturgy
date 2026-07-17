@@ -12,6 +12,7 @@ import atexit
 import json
 import math
 import os
+import re
 import shlex
 import signal
 import socket
@@ -60,8 +61,65 @@ def _reap_stale() -> None:
         pf.unlink(missing_ok=True)
 
 
+# A split model's parts, e.g. "model-Q4_K_M-00001-of-00003.gguf".
+SHARD_RE = re.compile(r"(?i)-\d{5}-of-\d{5}\.gguf$")
+
+
 def list_models() -> list[str]:
-    return sorted(p.name for p in models_dir().glob("*.gguf"))
+    """Loadable models, one entry per model rather than per file.
+
+    llama.cpp opens a split model through its first part and finds the rest
+    itself, so listing every part would offer parts 2..n as models that cannot
+    load. Sorting puts the lowest part first; if part 1 is missing the set is
+    broken anyway, and listing what's there keeps it visible and deletable.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for name in sorted(p.name for p in models_dir().glob("*.gguf")):
+        if not SHARD_RE.search(name):
+            out.append(name)
+            continue
+        stem = SHARD_RE.sub("", name)
+        if stem not in seen:
+            seen.add(stem)
+            out.append(name)
+    return out
+
+
+def model_files(name: str) -> list[Path]:
+    """Every file backing one model — a whole shard set, or a lone file.
+
+    Removing just the named part of a split model would strand the other parts
+    as unloadable orphans, so deletion has to work on the set.
+    """
+    if not SHARD_RE.search(name):
+        path = models_dir() / name
+        return [path] if path.exists() else []
+    stem = SHARD_RE.sub("", name)
+    return sorted(p for p in models_dir().glob("*.gguf")
+                  if SHARD_RE.search(p.name) and SHARD_RE.sub("", p.name) == stem)
+
+
+def delete_model(name: str) -> list[str]:
+    """Delete a model's file(s) from disk; returns the names removed.
+
+    Refuses while llama-server holds it open: unlink would succeed but the
+    space would stay claimed until the server exits, so the disk wouldn't
+    actually free and the model would keep serving from a deleted inode.
+    """
+    files = model_files(name)
+    if not files:
+        raise RuntimeError(f"{name} is already gone.")
+    if server.running and server.model:
+        if (models_dir() / server.model) in files:
+            raise RuntimeError(f"{server.model} is loaded — unload it first.")
+    removed = []
+    for path in files:
+        path.unlink(missing_ok=True)
+        removed.append(path.name)
+        _ctx_cache.pop(path.name, None)
+        _max_gpu_layers_cache.pop(path.name, None)
+    return removed
 
 
 _ctx_cache: dict[str, int | None] = {}
@@ -104,6 +162,8 @@ class LlamaServer:
         self.port: int | None = None
         self.model: str | None = None
         self.n_ctx: int | None = None  # trained/effective context, learned after load
+        self.chat_template_caps: dict = {}
+        self.reasoning_budget: int = -1  # thinking cap the server was launched with
         self._log_lines: deque[str] = deque(maxlen=SERVER_LOG_LIMIT)
         self._log_lock = threading.Lock()
         self._log_thread: threading.Thread | None = None
@@ -146,7 +206,8 @@ class LlamaServer:
     def start(self, model_name: str, gpu_layers: int = -1,
               ctx_size: int = 0, cache_type: str = "fp16",
               chat_template: str = "auto", reasoning: str = "auto",
-              reasoning_budget: int = -1) -> None:
+              reasoning_budget: int = -1,
+              reasoning_budget_message: str = "") -> None:
         self.stop()
         path = models_dir() / model_name
         if not path.exists():
@@ -167,6 +228,11 @@ class LlamaServer:
             cmd += ["--reasoning", reasoning]
         if reasoning_budget != -1:
             cmd += ["--reasoning-budget", str(reasoning_budget)]
+        # Without this the forced end-of-thinking tag lands mid-sentence; the
+        # message gives the model a cue to wrap up. Pointless with no budget.
+        if reasoning_budget > 0 and reasoning_budget_message:
+            cmd += ["--reasoning-budget-message", reasoning_budget_message]
+        self.reasoning_budget = reasoning_budget
         self._clear_output()
         self._append_output("$ " + " ".join(shlex.quote(str(part)) for part in cmd))
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -204,8 +270,18 @@ class LlamaServer:
             props = requests.get(f"{self.base_url}/props", timeout=10).json()
             self.n_ctx = (props.get("default_generation_settings", {}).get("n_ctx")
                           or props.get("n_ctx"))
+            caps = props.get("chat_template_caps") or {}
+            self.chat_template_caps = caps if isinstance(caps, dict) else {}
         except (requests.RequestException, ValueError):
             self.n_ctx = None
+            self.chat_template_caps = {}
+
+    def supports_system_role(self) -> bool:
+        """Whether the active llama.cpp chat template accepts a system message."""
+        if not self.running:
+            return True
+        supported = self.chat_template_caps.get("supports_system_role")
+        return True if supported is None else bool(supported)
 
     @staticmethod
     def _wait(proc: subprocess.Popen, timeout: float) -> bool:
@@ -239,6 +315,8 @@ class LlamaServer:
         self.port = None
         self.model = None
         self.n_ctx = None
+        self.chat_template_caps = {}
+        self.reasoning_budget = -1
         _pidfile().unlink(missing_ok=True)
 
     @staticmethod
@@ -284,6 +362,21 @@ class LlamaServer:
     def _estimate_tokens(text: str) -> int:
         return max(1, math.ceil(len(text) / 4))
 
+    @staticmethod
+    def _error_message(response) -> str:
+        """Pull llama-server's rejection reason out of an error response body.
+
+        The status code alone rarely says why the request was refused.
+        """
+        try:
+            body = response.json()
+        except ValueError:
+            return response.text.strip()[:500] or "no detail"
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict):
+            error = error.get("message") or error
+        return str(error if error else body)[:500]
+
     def count_chat_tokens(self, messages: list[dict]) -> tuple[int, bool]:
         """Return prompt-token usage for a chat, with exactness flag.
 
@@ -323,8 +416,23 @@ class LlamaServer:
 
         return self._estimate_tokens(prompt), False
 
+    def _max_tokens(self, max_new_tokens: int) -> int:
+        """Grow the request cap to cover thinking as well as the reply.
+
+        max_tokens caps thinking and reply together, so a bare max_new_tokens
+        lets a long thought eat the whole allowance and leave nothing to answer
+        with. A thinking model needs the sum. With no budget set (-1) there is
+        no bound to add, and a long enough thought can still exhaust the cap.
+        """
+        return max_new_tokens + max(0, self.reasoning_budget)
+
     def stream_chat(self, messages: list[dict], params: dict | None = None):
-        """Yield streaming chat events from /v1/chat/completions (SSE)."""
+        """Yield streaming chat events from /v1/chat/completions (SSE).
+
+        Emits "reasoning" events only for templates llama.cpp can build a parser
+        for; others (Gemma's) leave channel markers in the reply for the caller
+        to split.
+        """
         p = params or {}
         body = {
             "messages": messages,
@@ -334,12 +442,14 @@ class LlamaServer:
             "top_k": int(p.get("top_k", 40)),
             "min_p": p.get("min_p", 0.05),
             "repeat_penalty": p.get("repetition_penalty", 1.1),
-            "max_tokens": int(p.get("max_new_tokens", 512)),
+            "max_tokens": self._max_tokens(int(p.get("max_new_tokens", 512))),
         }
         finish_reason = None
         with requests.post(f"{self.base_url}/v1/chat/completions",
                            json=body, stream=True, timeout=600) as r:
-            r.raise_for_status()
+            if not r.ok:
+                raise RuntimeError(
+                    f"llama-server returned {r.status_code}: {self._error_message(r)}")
             for raw_line in r.iter_lines(decode_unicode=False):
                 try:
                     line = raw_line.decode("utf-8")
@@ -356,9 +466,13 @@ class LlamaServer:
                     continue
                 choice = (obj.get("choices") or [{}])[0]
                 finish_reason = choice.get("finish_reason") or finish_reason
-                delta = (choice.get("delta") or {}).get("content")
-                if delta:
-                    yield {"type": "delta", "text": delta}
+                delta = choice.get("delta") or {}
+                reasoning = delta.get("reasoning_content")
+                if reasoning:
+                    yield {"type": "reasoning", "text": reasoning}
+                content = delta.get("content")
+                if content:
+                    yield {"type": "delta", "text": content}
         if finish_reason:
             yield {"type": "finish", "reason": finish_reason}
 
