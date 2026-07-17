@@ -8,7 +8,7 @@ It's built with [NiceGUI](https://nicegui.io), model serving uses `llama.cpp`'s 
 and package management is handled by [uv](https://docs.astral.sh/uv/).
 
 Thaumaturgy started because I loved the simplicity of 
-[text-generation-webui](https://github.com/oobabooga/text-generation-webui), but
+[textgen](https://github.com/oobabooga/text-generation-webui), but
 I had a number of nits with the UI I wanted to improve. I wanted managing settings to be quicker and more intuitive (at least for me).
 One local user, GGUF / `llama.cpp` models, scenarios,
 chat history, sampler presets, and model runtime settings. User data is stored
