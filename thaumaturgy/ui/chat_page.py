@@ -13,7 +13,8 @@ import time
 
 from nicegui import app, run, ui
 
-from thaumaturgy import appstate, engine, store
+from thaumaturgy import appstate, engine, plugins, store
+from thaumaturgy.plugins import compaction
 
 # Matches both dialects: `<|channel>thought` and `<|channel|>analysis<|message|>`.
 # The terminator is required so a name still streaming in ("<|channel>a") isn't
@@ -237,24 +238,38 @@ def _prepend_to_first_user(messages: list[dict], prefix: str) -> list[dict]:
 
 
 def _api_messages(chat: dict, scenario: str, scenario_details: dict,
-                  draft: str = "") -> list[dict]:
+                  draft: str = "", use_compaction: bool = True) -> list[dict]:
     """Build the /v1/chat/completions message list, including any unsent `draft`.
 
     The draft is folded in here, not appended by the caller: without a system
     role the scenario merges into the first user turn, which may be the draft.
+
+    When the chat carries a compaction summary and `use_compaction` is set, the
+    summarized head of the history is dropped and the summary is injected as
+    system context — so the model sees a compact version while the stored
+    transcript (and the UI) keep every message.
     """
     details = scenario_details.get(scenario, {})
     system_parts = []
     context = (details.get("context") or "").strip()
     if context:
         system_parts.append(context)
-    chat_messages = list(chat.get("messages", []))
+    all_messages = list(chat.get("messages", []))
+    comp = chat.get("compaction") or {}
+    summary = comp.get("summary") if use_compaction else None
+    covered = min(max(comp.get("covered", 0), 0), len(all_messages)) if summary else 0
+    chat_messages = all_messages[covered:]
+    if summary:
+        system_parts.append(f"Summary of earlier messages:\n{summary}")
     # Gemma-style templates raise on a leading assistant turn, and no
-    # chat_template_caps flag reports it — so the opening always moves to the prompt.
+    # chat_template_caps flag reports it — so a leading non-user turn moves to the
+    # prompt. Uncompacted that's the opening scene; after folding it's just a
+    # stray leading assistant turn tucked away the same way.
+    lead_label = "Opening scene" if covered == 0 else "Earlier"
     while chat_messages and chat_messages[0].get("role") != "user":
         opening = (chat_messages.pop(0).get("text") or "").strip()
         if opening:
-            system_parts.append(f"Opening scene:\n{opening}")
+            system_parts.append(f"{lead_label}:\n{opening}")
     messages = []
     for m in chat_messages:
         text = (m.get("text") or "").strip()
@@ -313,7 +328,28 @@ def render():
     scenario_details = {s["name"]: s for s in scenarios}
     if appstate.state.current_scenario not in scenario_names:
         appstate.state.current_scenario = scenario_names[0] if scenario_names else None
-    page = {"chat": None, "refresh_context": lambda: None}
+    page = {"chat": None, "refresh_context": lambda: None, "compaction_note": None,
+            "preparing": set()}
+
+    def set_compaction_note(text: str, *, warn: bool = False):
+        note = page.get("compaction_note")
+        if note is None or note.is_deleted:
+            return
+        note.text = text or ""
+        note.style("color:#d9822b" if warn else "")  # amber warning vs muted default
+        note.set_visibility(bool(text))
+
+    def update_compaction_note(chat: dict | None, result=None):
+        """Reflect compaction state below the context counter.
+
+        A fresh `result` (just-attempted compaction) wins; otherwise fall back to
+        the chat's persistent state so switching chats shows the right note.
+        """
+        if result is not None and result.feedback is not None:
+            set_compaction_note(result.feedback,
+                                warn=result.status == compaction.STATUS_FALLBACK)
+            return
+        set_compaction_note(compaction.active_note(chat or {}) or "")
 
     def generation_for_chat(chat_id: str | None) -> dict | None:
         return appstate.state.generations.get(chat_id or "")
@@ -478,6 +514,7 @@ def render():
         chat_list.refresh()
         watch_generation(chat["id"] if chat else None)
         page["refresh_context"]()
+        update_compaction_note(chat)
         asyncio.create_task(scroll_bottom_after_render())
 
     def load_chat(chat_id: str):
@@ -514,7 +551,7 @@ def render():
         chat = pending_delete.get("chat")
         if not chat:
             return
-        if generation_for_chat(chat.get("id")):
+        if generation_for_chat(chat.get("id")) or chat.get("id") in page["preparing"]:
             ui.notify("Wait for generation to finish before deleting this chat.",
                       type="warning")
             return
@@ -530,7 +567,7 @@ def render():
         chat = page["chat"]
         if not chat:
             return
-        if generation_for_chat(chat["id"]):
+        if generation_for_chat(chat["id"]) or chat["id"] in page["preparing"]:
             ui.notify("Wait for the current reply to finish.", type="warning")
             return
         index = _latest_assistant_response_index(chat.get("messages", []))
@@ -552,7 +589,7 @@ def render():
         if not text:
             ui.notify("Response text can't be empty.", type="warning")
             return
-        if generation_for_chat(chat["id"]):
+        if generation_for_chat(chat["id"]) or chat["id"] in page["preparing"]:
             ui.notify("Wait for the current reply to finish.", type="warning")
             return
         latest_index = _latest_assistant_response_index(chat.get("messages", []))
@@ -583,31 +620,101 @@ def render():
         appstate.state.current_scenario = name
         show_chat(first_chat(name))
 
-    def start_assistant_reply(chat: dict, scenario: str | None):
+    def _prompt_budget(params: dict) -> int | None:
+        """Prompt-token budget: the context window minus generation headroom.
+
+        max_tokens caps thinking + reply together (see engine._max_tokens), so
+        both are reserved out of the window before we decide the prompt fits.
+        """
+        total = _context_total()
+        if not total:
+            return None
+        reserve = int(params.get("max_new_tokens", 512)) + max(0, engine.server.reasoning_budget)
+        return max(0, total - reserve)
+
+    def _count_tokens(api: list[dict]) -> int:
+        used, _exact = engine.server.count_chat_tokens(api)
+        return used
+
+    def _summarize(instruction: str, user: str, max_tokens: int) -> str:
+        # `instruction` is the compaction directive (system message); `user` holds
+        # the tagged scenario + transcript. Fold into one turn when the template
+        # has no system role.
+        if instruction and engine.server.supports_system_role():
+            msgs = [{"role": "system", "content": instruction},
+                    {"role": "user", "content": user}]
+        elif instruction:
+            msgs = [{"role": "user", "content": f"{instruction}\n\n{user}"}]
+        else:
+            msgs = [{"role": "user", "content": user}]
+        return engine.server.complete_chat(msgs, max_tokens=max_tokens)
+
+    async def compact_for_send(chat: dict, scenario: str | None):
+        """Compact older turns off the UI thread; return (api, result).
+
+        Runs the active compaction plugin. Only summarizes when the outgoing
+        context nears the budget, so most sends just cost one token count.
+        """
+        def build_api(c, use_compaction=True):
+            return _api_messages(c, scenario, scenario_details,
+                                 use_compaction=use_compaction)
+
+        compactor = plugins.get_compactor()
+        budget = _prompt_budget(appstate.state.current_params)
+        if compactor is None or budget is None:
+            return build_api(chat), None
+
+        # The plugin wraps the scenario prompt in <SCENARIO> tags so the model
+        # frames the transcript without summarizing it. The instruction is
+        # user-customizable via app_config; None falls back to the default.
+        scenario_prompt = (scenario_details.get(scenario, {}).get("context") or "").strip()
+        instruction = store.load_app_config().get("compaction_instruction") or None
+
+        def work():
+            return compactor(chat, build_api=build_api, count_tokens=_count_tokens,
+                             summarize=_summarize, budget=budget,
+                             scenario_prompt=scenario_prompt, instruction=instruction)
+
+        result = await run.io_bound(work)
+        store.save_chat(chat)  # persist any summary the compactor stored
+        return result.api, result
+
+    async def start_assistant_reply(chat: dict, scenario: str | None):
         if page.get("inner") is None or page["inner"].is_deleted:
             render_messages()
         inner = page.get("inner")
-        api = _api_messages(chat, scenario, scenario_details)
-        model_name = engine.server.model or appstate.state.current_model
-        assistant = {"role": "assistant", "name": scenario, "text": "", "model": model_name}
-        chat["messages"].append(assistant)
-        store.save_chat(chat)
-        with inner:
-            page["stream_view"] = _message(assistant, on_scenario_click=open_scenario)
+        # Reserve the chat for the whole prepare→launch window: compaction awaits
+        # a summary call, and until _start_generation registers the worker the
+        # normal generation guard can't see this send yet.
+        page["preparing"].add(chat["id"])
+        try:
+            # Compact before appending the placeholder so "keep recent 5" counts
+            # real messages, and so the summary call runs off the UI thread.
+            api, result = await compact_for_send(chat, scenario)
+            model_name = engine.server.model or appstate.state.current_model
+            assistant = {"role": "assistant", "name": scenario, "text": "", "model": model_name}
+            chat["messages"].append(assistant)
+            store.save_chat(chat)
+            with inner:
+                page["stream_view"] = _message(assistant, on_scenario_click=open_scenario)
 
-        _start_generation(chat, api, assistant, dict(appstate.state.current_params))
+            _start_generation(chat, api, assistant, dict(appstate.state.current_params))
+        finally:
+            page["preparing"].discard(chat["id"])
         watch_generation(chat["id"])
         scroll_bottom()
+        update_compaction_note(chat, result)
         page["refresh_context"]()
 
-    def send():
+    async def send():
         text = _normalize_user_markdown(input_box.value or "")
         if not text:
             return
         if not engine.server.running:
             ui.notify("Load a model on the Model page first.", type="negative")
             return
-        if page["chat"] and generation_for_chat(page["chat"]["id"]):
+        if page["chat"] and (generation_for_chat(page["chat"]["id"])
+                             or page["chat"]["id"] in page["preparing"]):
             # A second worker on the same chat would interleave its writes with
             # the first's and evict it from the registry.
             ui.notify("Wait for the current reply to finish.", type="warning")
@@ -620,16 +727,16 @@ def render():
         input_box.value = ""
         render_messages()
         scroll_bottom()
-        start_assistant_reply(chat, scenario)
+        await start_assistant_reply(chat, scenario)
 
-    def regenerate_last():
+    async def regenerate_last():
         chat = page["chat"]
         if not chat:
             return
         if not engine.server.running:
             ui.notify("Load a model on the Model page first.", type="negative")
             return
-        if generation_for_chat(chat["id"]):
+        if generation_for_chat(chat["id"]) or chat["id"] in page["preparing"]:
             ui.notify("Wait for the current reply to finish.", type="warning")
             return
         index = _latest_assistant_response_index(chat.get("messages", []))
@@ -641,7 +748,7 @@ def render():
         store.save_chat(chat)
         render_messages()
         scroll_bottom()
-        start_assistant_reply(chat, scenario)
+        await start_assistant_reply(chat, scenario)
 
     @ui.refreshable
     def chat_list():
@@ -697,6 +804,10 @@ def render():
                     "min-h-8 w-full justify-center px-2 py-1 font-mono text-[11px] "
                     "whitespace-normal text-center leading-tight"
                 )
+            page["compaction_note"] = ui.label("") \
+                .classes("w-full text-[11px] leading-tight text-muted "
+                         "whitespace-normal text-center")
+            page["compaction_note"].set_visibility(False)
 
     context_state = {"signature": None, "busy": False}
 

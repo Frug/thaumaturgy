@@ -476,6 +476,31 @@ class LlamaServer:
         if finish_reason:
             yield {"type": "finish", "reason": finish_reason}
 
+    def complete_chat(self, messages: list[dict], params: dict | None = None,
+                      max_tokens: int = 512) -> str:
+        """Run a non-streaming /v1/chat/completions and return the full reply.
+
+        Used for one-off model work that isn't the user's conversation — e.g.
+        summarizing older turns for context compaction. Deliberately separate
+        from stream_chat: no reasoning budget is added (we want the answer, not
+        thinking) and the result is returned whole rather than yielded.
+        """
+        p = params or {}
+        body = {
+            "messages": messages,
+            "stream": False,
+            "temperature": p.get("temperature", 0.3),
+            "top_p": p.get("top_p", 0.95),
+            "max_tokens": max_tokens,
+        }
+        r = requests.post(f"{self.base_url}/v1/chat/completions",
+                          json=body, timeout=600)
+        if not r.ok:
+            raise RuntimeError(
+                f"llama-server returned {r.status_code}: {self._error_message(r)}")
+        choice = (r.json().get("choices") or [{}])[0]
+        return (choice.get("message") or {}).get("content", "") or ""
+
 
 _reap_stale()  # clean up a llama-server orphaned by a previous (reloaded) instance
 server = LlamaServer()
