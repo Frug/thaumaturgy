@@ -13,7 +13,7 @@ import time
 
 from nicegui import app, run, ui
 
-from thaumaturgy import appstate, engine, plugins, store
+from thaumaturgy import appstate, engine, plugins, statevars, store
 from thaumaturgy.plugins import compaction
 
 # Matches both dialects: `<|channel>thought` and `<|channel|>analysis<|message|>`.
@@ -109,6 +109,7 @@ def _message_text_and_reasoning(m: dict) -> tuple[str, str]:
     if m.get("role") == "assistant":
         text, marker_reasoning = _split_reasoning_channels(text)
         reasoning = reasoning or marker_reasoning
+        text = statevars.visible(text)  # defensive: stored text is already clean
     return _visible_and_reasoning(text, reasoning)
 
 
@@ -203,7 +204,7 @@ def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict
                 text, marker_reasoning = _split_reasoning_channels(raw_text)
                 text, reasoning = _visible_and_reasoning(
                     text, _join_blocks([raw_reasoning, marker_reasoning]))
-                assistant["text"] = text
+                assistant["text"] = statevars.visible(text)  # hide the (partial) STATE block
                 if reasoning:
                     assistant["reasoning"] = reasoning
                 else:
@@ -218,6 +219,16 @@ def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict
             assistant["finish_reason"] = "error"
             assistant["generation_error"] = error
         finally:
+            if not assistant.get("generation_error"):
+                # Parse the completed reply once: store the clean text and fold any
+                # STATE block into the chat's authoritative variables.
+                text, marker_reasoning = _split_reasoning_channels(raw_text)
+                text, _r = _visible_and_reasoning(
+                    text, _join_blocks([raw_reasoning, marker_reasoning]))
+                clean, updates = statevars.extract(text)
+                assistant["text"] = clean
+                if updates:
+                    chat["state"] = statevars.apply(chat.get("state") or {}, updates)
             store.save_chat(chat)
             if appstate.state.generations.get(chat_id) is state:
                 del appstate.state.generations[chat_id]
@@ -254,6 +265,7 @@ def _api_messages(chat: dict, scenario: str, scenario_details: dict,
     context = (details.get("context") or "").strip()
     if context:
         system_parts.append(context)
+    system_parts.append(statevars.PROTOCOL_INSTRUCTION)
     all_messages = list(chat.get("messages", []))
     comp = chat.get("compaction") or {}
     summary = comp.get("summary") if use_compaction else None
@@ -279,6 +291,9 @@ def _api_messages(chat: dict, scenario: str, scenario_details: dict,
         messages.append({"role": role, "content": m.get("text", "")})
     if draft:
         messages.append({"role": "user", "content": draft})
+    state_block = statevars.format_for_prompt(chat.get("state") or {})
+    if state_block:
+        system_parts.append(state_block)  # authoritative values, last so they're freshest
     system_content = "\n\n".join(system_parts).strip()
     if not system_content:
         return messages
@@ -489,6 +504,7 @@ def render():
                     render_reply_actions()
             scroll_bottom()
             chat_list.refresh()
+            state_panel.refresh()  # the worker folded any STATE block in on finish
             if generation["error"]:
                 # Runs as a bare task (see watch_generation), which has no slot
                 # stack of its own — ui.notify needs one to find the client.
@@ -515,6 +531,7 @@ def render():
         watch_generation(chat["id"] if chat else None)
         page["refresh_context"]()
         update_compaction_note(chat)
+        state_panel.refresh()
         asyncio.create_task(scroll_bottom_after_render())
 
     def load_chat(chat_id: str):
@@ -751,6 +768,19 @@ def render():
         await start_assistant_reply(chat, scenario)
 
     @ui.refreshable
+    def state_panel():
+        st = (page.get("chat") or {}).get("state") or {}
+        if not st:
+            ui.label("Nothing tracked yet").classes("text-xs text-muted italic")
+            return
+        with ui.column().classes("w-full gap-1"):
+            for key, value in st.items():
+                with ui.row().classes("w-full justify-between gap-2 no-wrap items-baseline"):
+                    ui.label(str(key)).classes("text-xs text-muted ellipsis min-w-0")
+                    ui.label(statevars.format_value(value)) \
+                        .classes("text-xs font-mono text-right break-words")
+
+    @ui.refreshable
     def chat_list():
         chats = store.list_chats(appstate.state.current_scenario)
         if not chats:
@@ -808,6 +838,10 @@ def render():
                 .classes("w-full text-[11px] leading-tight text-muted "
                          "whitespace-normal text-center")
             page["compaction_note"].set_visibility(False)
+
+            ui.separator().classes("my-1")
+            ui.label("STATE").classes("text-xs text-muted tracking-wide")
+            state_panel()
 
     context_state = {"signature": None, "busy": False}
 
