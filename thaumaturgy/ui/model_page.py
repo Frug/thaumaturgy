@@ -443,6 +443,13 @@ def _model_card(bridge):
         status = ui.label().classes("text-sm")
 
         with ui.column().classes("tg-pset-box w-full gap-2"):
+            ui.label("Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
+            runtime_owner = ui.label().classes("text-sm font-mono break-all")
+            ui.button("Edit runtime settings", icon="edit",
+                      on_click=lambda: bridge["enter_runtime_edit"]()) \
+                .props("color=primary unelevated").classes("w-full")
+
+        with ui.column().classes("tg-pset-box w-full gap-2"):
             ui.label("Parameter Set").classes("text-xs text-muted uppercase tracking-wide")
             param_set = ui.select(options=bridge["pset_options"](),
                                   value=bridge.get("start_pset", DEFAULT_PRESET)) \
@@ -459,13 +466,6 @@ def _model_card(bridge):
         param_set.on_value_change(
             lambda e: bridge["apply_param"](e.value) if "apply_param" in bridge else None)
         bridge["param_select"] = param_set
-
-        with ui.column().classes("tg-pset-box w-full gap-2"):
-            ui.label("Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
-            runtime_owner = ui.label().classes("text-sm font-mono break-all")
-            ui.button("Edit runtime settings", icon="edit",
-                      on_click=lambda: bridge["enter_runtime_edit"]()) \
-                .props("color=primary unelevated").classes("w-full")
 
         def refresh_runtime_owner():
             m = bridge["current_model"]()
