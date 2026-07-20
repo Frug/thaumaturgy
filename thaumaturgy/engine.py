@@ -121,8 +121,8 @@ def delete_model(name: str) -> list[str]:
     return removed
 
 
-# Keyed by (name, mtime_ns, size) so a re-downloaded or still-copying file is
-# re-read rather than serving the previous file's metadata.
+# Keyed by (name, mtime_ns, size) so a re-downloaded file isn't served the old
+# file's metadata.
 _ctx_cache: dict[tuple, int | None] = {}
 _max_gpu_layers_cache: dict[tuple, int | None] = {}
 
@@ -134,14 +134,8 @@ def _drop_cached(name: str) -> None:
 
 
 def _read_metadata(cache: dict, model_name: str, read) -> int | None:
-    """Cache a GGUF metadata read, keyed on the file's identity.
-
-    Failures are not cached: a partially-copied download or a briefly
-    unavailable mount would otherwise pin the answer to None for the life of
-    the process. The parser raises struct.error / KeyError / ValueError on a
-    malformed or truncated file, and the callers render into the page on every
-    refresh, so nothing may escape here.
-    """
+    """Cache a GGUF metadata read; failures aren't cached, so a still-copying
+    download isn't pinned to None for the life of the process."""
     path = models_dir() / model_name
     try:
         stat = path.stat()
@@ -151,7 +145,7 @@ def _read_metadata(cache: dict, model_name: str, read) -> int | None:
     if key not in cache:
         try:
             cache[key] = read(path)
-        except Exception:  # noqa: BLE001 - any malformed GGUF, never a broken page
+        except Exception:  # noqa: BLE001 - a malformed GGUF must not break the page
             return None
     return cache[key]
 

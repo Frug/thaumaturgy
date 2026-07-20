@@ -918,12 +918,8 @@ def render():
             confirm_dialog.open()
 
     def estimate_vram(vals: dict | None = None) -> float | str:
-        """Rough VRAM estimate, or a word saying why there isn't one.
-
-        Every unknown returns a reason rather than a number: a confident
-        "~ 0.0 GB" under a memory icon reads as an answer, and the weights term
-        silently vanishing (unreadable file) is worse than saying nothing.
-        """
+        """Rough VRAM estimate, or a word saying why there isn't one — a
+        "~ 0.0 GB" built from missing inputs reads as an answer."""
         model = current_model()
         if not model:
             return "no model"
@@ -965,13 +961,11 @@ def render():
                     model_name = current_model()
                     summary_row("Model", model_name or "None selected")
                     summary_row("Runtime status", _runtime_status_label(model_name))
-                    # The model's own trained limit, not the window the server was
-                    # launched with — /props reports the latter.
+                    # From metadata, not the server: /props n_ctx is the window
+                    # llama-server was launched with, not the model's limit.
                     detected = engine.trained_ctx(model_name) if model_name else None
                     summary_row("Detected max context",
                                 f"{detected:,} tokens" if detected else "Unknown")
-                    # What llama.cpp actually gave us, which the profile's context
-                    # size doesn't tell you when it's set to auto.
                     if engine.server.running and engine.server.n_ctx:
                         summary_row("Active context window",
                                     f"{engine.server.n_ctx:,} tokens")
