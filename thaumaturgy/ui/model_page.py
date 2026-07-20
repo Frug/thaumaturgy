@@ -3,7 +3,7 @@
 The left panel scans data/models for GGUFs and loads/unloads them via the engine
 (spawns llama-server). The right panel shows the selected parameter set (read-only)
 and, in edit mode, the parameter-set editor. VRAM is a rough pre-load estimate;
-context is detected from the server after load.
+the detected max context comes from the GGUF metadata.
 """
 
 from nicegui import app, run, ui
@@ -30,6 +30,13 @@ UNKNOWN_QUANT = "__unknown__"
 CTX_HELP = (
     "Context length. 0 = auto for llama.cpp (requires gpu-layers=-1), 8192 for "
     "other loaders. Common values: 4096, 8192, 16384, 32768, 65536, 131072."
+)
+
+VRAM_HELP = (
+    "A rough estimate of GPU memory use. Shown only when the runtime profile "
+    "pins both values it needs: GPU layers set to 0 or higher (not -1/auto) and "
+    "a context size above 0. On auto, llama.cpp decides at load time and there "
+    "is nothing to estimate from."
 )
 
 # ── Generation presets (right column) ───────────────────────────────────────────
@@ -938,8 +945,10 @@ def render():
                     ui.label("Model").classes("text-xs text-muted uppercase tracking-wide")
                     summary_row("Model", current_model() or "None selected")
                     summary_row("Runtime status", "Loaded" if engine.server.running else "Not loaded")
-                    detected = engine.server.n_ctx or (engine.trained_ctx(current_model())
-                                                       if current_model() else None)
+                    # The model's own trained limit, not the window the server was
+                    # launched with — /props reports the latter.
+                    model_name = current_model()
+                    detected = engine.trained_ctx(model_name) if model_name else None
                     summary_row("Detected max context",
                                 f"{detected:,} tokens" if detected else "Unknown")
 
@@ -954,7 +963,6 @@ def render():
                     summary_row("Reasoning", _runtime_reasoning_label(runtime))
                     summary_row("Reasoning budget", _runtime_reasoning_budget_label(runtime))
                     summary_row("Budget message", _runtime_budget_message_label(runtime))
-                    summary_row("Estimated VRAM", vram_label(runtime))
 
                 ui.separator()
                 with ui.column().classes("w-full gap-2"):
@@ -962,6 +970,16 @@ def render():
                     summary_row("Parameter set", state["active"])
                     for key, label, _minv, _maxv, _step, dec in PARAMS:
                         summary_row(label, _fmt(dec)(params.get(key, PRESETS[DEFAULT_PRESET][key])))
+
+                ui.separator()
+                with ui.row().classes("w-full items-center gap-2 p-3 rounded-lg") \
+                        .style("background: rgba(52,97,140,0.10)"):
+                    ui.icon("memory").classes("text-primary")
+                    ui.label("Estimated VRAM").classes("text-sm")
+                    with ui.icon("help_outline").classes("text-sm text-muted cursor-help"):
+                        ui.tooltip(VRAM_HELP).classes("max-w-xs text-xs leading-snug")
+                    ui.label(vram_label(runtime)) \
+                        .classes("ml-auto text-base font-semibold font-mono")
                 return
 
             if state["mode"] == "param_edit":
@@ -1057,12 +1075,6 @@ def render():
                      "Only used when the budget is above 0.") \
                 .classes("text-xs text-muted leading-snug")
 
-            with ui.row().classes("w-full items-center gap-2 mt-1 p-3 rounded-lg") \
-                    .style("background: rgba(52,97,140,0.10)"):
-                ui.icon("memory").classes("text-primary")
-                ui.label("Estimated VRAM").classes("text-sm")
-                vram = ui.label().classes("ml-auto text-base font-semibold font-mono")
-
             def save_runtime_edit(_=None):
                 budget = controls["reasoning_budget"].value
                 runtime_sets[state["runtime_editing"]] = {
@@ -1076,7 +1088,6 @@ def render():
                         (controls["reasoning_budget_message"].value or "").strip(),
                 }
                 persist_runtime()
-                vram.text = vram_label(runtime_sets[state["runtime_editing"]])
 
             for control in controls.values():
                 control.on_value_change(save_runtime_edit)
