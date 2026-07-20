@@ -190,20 +190,25 @@ def _model_card(bridge):
             ui.label("Model").classes("text-lg font-semibold")
             ui.badge("llama.cpp").props("color=secondary").classes("font-mono")
 
-        with ui.row().classes("w-full items-center gap-2 no-wrap"):
-            if models:
-                model = ui.select(options=models, value=appstate.state.current_model
-                                  if appstate.state.current_model in models else models[0]) \
-                    .classes("tg-field").props("filled").style("flex:1;min-width:0")
-            else:
-                model = ui.select(options=["(no models found)"], value="(no models found)") \
-                    .classes("tg-field").props("filled").style("flex:1;min-width:0")
-                model.disable()
-            delete_btn = ui.button(icon="delete") \
-                .props("flat dense color=negative").tooltip("Delete this model from disk")
-        if not models:
-            ui.label(f"Put .gguf files in {engine.models_dir()}").classes("text-xs text-muted")
-            delete_btn.disable()
+        # Built early for the closures below, but filled in stages: the load
+        # buttons need the download dialog, which is defined further down.
+        runtime_box = ui.column().classes("tg-pset-box w-full gap-2")
+        with runtime_box:
+            ui.label("Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
+            with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                if models:
+                    model = ui.select(options=models, value=appstate.state.current_model
+                                      if appstate.state.current_model in models else models[0]) \
+                        .classes("tg-field").props("filled").style("flex:1;min-width:0")
+                else:
+                    model = ui.select(options=["(no models found)"], value="(no models found)") \
+                        .classes("tg-field").props("filled").style("flex:1;min-width:0")
+                    model.disable()
+                delete_btn = ui.button(icon="delete") \
+                    .props("flat dense color=negative").tooltip("Delete this model from disk")
+            if not models:
+                ui.label(f"Put .gguf files in {engine.models_dir()}").classes("text-xs text-muted")
+                delete_btn.disable()
         bridge["model_select"] = model
 
         # ── Delete-model confirmation ────────────────────────────────────────
@@ -431,19 +436,18 @@ def _model_card(bridge):
         dl_go.on_click(lambda: run_job(hf_download.convert,
                                        (dl_url.value or "").strip(), dl_quant.value))
 
-        with ui.row().classes("w-full gap-2 mb-4"):
-            load_btn = ui.button("Load model", icon="play_arrow") \
-                .props("color=positive unelevated")
-            ui.button("Unload", icon="stop",
-                      on_click=lambda: (engine.server.stop(), refresh_status(), refresh_preview())) \
-                .props("color=negative unelevated")
-            ui.button("Download New Model", icon="download", on_click=dl_dialog.open) \
-                .props("color=primary unelevated")
+        with runtime_box:
+            with ui.row().classes("w-full gap-2"):
+                load_btn = ui.button("Load model", icon="play_arrow") \
+                    .props("color=positive unelevated")
+                ui.button("Unload", icon="stop",
+                          on_click=lambda: (engine.server.stop(), refresh_status(),
+                                            refresh_preview())) \
+                    .props("color=negative unelevated")
+                ui.button("Download New Model", icon="download", on_click=dl_dialog.open) \
+                    .props("color=primary unelevated")
 
-        status = ui.label().classes("text-sm")
-
-        with ui.column().classes("tg-pset-box w-full gap-2"):
-            ui.label("Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
+            status = ui.label().classes("text-sm")
             runtime_owner = ui.label().classes("text-sm font-mono break-all")
             ui.button("Edit runtime settings", icon="edit",
                       on_click=lambda: bridge["enter_runtime_edit"]()) \
@@ -468,8 +472,9 @@ def _model_card(bridge):
         bridge["param_select"] = param_set
 
         def refresh_runtime_owner():
-            m = bridge["current_model"]()
-            runtime_owner.text = f"Per-model · {m}" if m else "Select a model"
+            # The dropdown above already names the model; say what's scoped to it.
+            runtime_owner.text = ("Settings are saved per model."
+                                  if bridge["current_model"]() else "Select a model.")
 
         bridge["refresh_runtime_owner"] = refresh_runtime_owner
         refresh_runtime_owner()
