@@ -239,6 +239,10 @@ def _model_card(bridge):
                 model.disable()
                 delete_btn.disable()
                 appstate.state.current_model = None
+                # select_model_defaults early-returns on the placeholder, so the
+                # editor would still be bound to the model just deleted.
+                bridge["refresh_runtime_owner"]()
+                bridge["refresh_details"]()
             refresh_status()
             refresh_preview()
 
@@ -614,13 +618,15 @@ def render():
         return sets.get(name, PRESETS[DEFAULT_PRESET])
 
     def model_runtime(model_name: str | None) -> dict:
-        """The model's own load settings, seeded from the default template."""
-        if not model_name:
-            return store.normalize_runtime(None)
-        if model_name not in runtime_models:
-            runtime_models[model_name] = store.normalize_runtime(
-                runtime_templates.get(DEFAULT_RUNTIME_TEMPLATE))
-        return runtime_models[model_name]
+        """The model's saved load settings, or the default template's values.
+
+        Read-only: browsing the model dropdown renders these, and storing an
+        entry per model merely looked at would grow the file with every model
+        ever selected. Entries appear when something actually writes one.
+        """
+        if model_name and model_name in runtime_models:
+            return runtime_models[model_name]
+        return store.normalize_runtime(runtime_templates.get(DEFAULT_RUNTIME_TEMPLATE))
 
     def active_runtime():
         return model_runtime(current_model())
@@ -708,6 +714,8 @@ def render():
     bridge["make_default"] = make_default
     bridge["use_default"] = use_default
     bridge["refresh_preview"] = refresh_preview
+    # Unlike refresh_preview, rebuilds in edit mode too.
+    bridge["refresh_details"] = lambda: details_panel.refresh()
 
     def enter_param_edit():
         state["mode"] = "param_edit"
@@ -858,7 +866,9 @@ def render():
                 .props("color=negative unelevated")
 
     def ask_delete():
-        if state["mode"] == "runtime_edit" and state["template"]:
+        # Branch on mode alone, exactly as the Delete button does, or the prompt
+        # can name one thing while the button deletes another.
+        if state["mode"] == "runtime_edit":
             confirm_label.text = (
                 f"Delete template “{state['template']}”? This can't be undone.")
             confirm_dialog.open()
@@ -992,10 +1002,14 @@ def render():
             ui.label(edited_model).classes("text-lg font-semibold break-all")
 
             controls = {}
-            ceiling = _gpu_layer_ceiling(edited_model)
-            controls["gpu_layers"] = _slider_row("GPU layers", -1, ceiling, 1,
-                                                 min(vals.get("gpu_layers", -1), ceiling), 0)
             blocks = engine.max_gpu_layers(edited_model)
+            # Never clamp the stored value against the fallback ceiling: a
+            # transient metadata failure would otherwise truncate a legitimate
+            # setting to 100 and leave no way to type it back in.
+            ceiling = max(blocks or FALLBACK_MAX_GPU_LAYERS,
+                          int(vals.get("gpu_layers", -1)))
+            controls["gpu_layers"] = _slider_row("GPU layers", -1, ceiling, 1,
+                                                 vals.get("gpu_layers", -1), 0)
             ui.label(
                 f"-1 = auto (llama.cpp fits what VRAM allows). 0 = CPU only. "
                 + (f"{blocks} = every layer of this model."
@@ -1044,6 +1058,10 @@ def render():
                 .classes("text-xs text-muted leading-snug")
 
             def save_runtime_edit(_=None):
+                # Guard against a control firing after the model moved on: the
+                # panel rebuilds per model, and this closure holds the old one.
+                if current_model() != edited_model:
+                    return
                 budget = controls["reasoning_budget"].value
                 runtime_models[edited_model] = store.normalize_runtime({
                     "gpu_layers": controls["gpu_layers"].value,
@@ -1059,7 +1077,6 @@ def render():
 
             for control in controls.values():
                 control.on_value_change(save_runtime_edit)
-            save_runtime_edit()
 
             ui.button("Save", icon="save",
                       on_click=lambda: (persist_runtime(),

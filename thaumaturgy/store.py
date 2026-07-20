@@ -14,6 +14,16 @@ def _app_config_path() -> Path:
     return data_dir() / "app_config.yaml"
 
 
+def _as_mapping(value) -> dict:
+    """A dict, or an empty one — these files are hand-editable."""
+    return value if isinstance(value, dict) else {}
+
+
+def _as_list(value) -> list:
+    """A list, or an empty one; a bare string is not a list of names."""
+    return value if isinstance(value, list) else []
+
+
 def _write_atomic(path: Path, text: str) -> None:
     """Replace `path` in one step, so a concurrent reader never sees a partial file.
 
@@ -275,8 +285,8 @@ def load_presets() -> dict:
 
 
 def save_presets(doc: dict) -> None:
-    _presets_path().write_text(
-        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    _write_atomic(_presets_path(),
+                  yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
 
 
 # ── Runtime settings (model loading settings) ───────────────────────────────
@@ -324,9 +334,13 @@ def _runtime_profiles_path():
     return data_dir() / "runtime_profiles.yaml"
 
 
-def normalize_runtime(vals: dict | None) -> dict:
-    """Coerce one settings dict into every field, with sane types."""
-    src = vals or {}
+def normalize_runtime(vals) -> dict:
+    """Coerce one settings dict into every field, with sane types.
+
+    Takes anything: these come straight from a hand-editable YAML file, and
+    this runs while building the model page.
+    """
+    src = vals if isinstance(vals, dict) else {}
     out = dict(BUILTIN_RUNTIME_TEMPLATES[DEFAULT_RUNTIME_TEMPLATE])
     for key, cast in (("gpu_layers", int), ("context_size", int),
                       ("reasoning_budget", int)):
@@ -339,8 +353,10 @@ def normalize_runtime(vals: dict | None) -> dict:
                          ("reasoning", RUNTIME_REASONING_MODES)):
         if src.get(key) in allowed:
             out[key] = src[key]
+    # `or`, not a get default: a null in the YAML would stringify to "None"
+    # and be handed to llama-server as the model's forced last thought.
     out["reasoning_budget_message"] = str(
-        src.get("reasoning_budget_message", out["reasoning_budget_message"]))
+        src.get("reasoning_budget_message") or out["reasoning_budget_message"])
     return out
 
 
@@ -363,22 +379,28 @@ def _migrate_runtime_profiles() -> dict | None:
         doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, OSError):
         return None
-    sets = doc.get("sets") or {}
+    sets = _as_mapping(doc).get("sets")
+    sets = _as_mapping(sets)
     if not sets:
         return None
-    templates = {}
+    # Every profile is resolvable for pinned models, including Custom — it just
+    # doesn't survive as a template, being a scratch slot per-model settings
+    # replace. Dropping it here would silently reset the models pinned to it.
+    resolved = {}
     for name, vals in sets.items():
-        if name == CUSTOM:
-            continue  # a scratch profile; per-model settings replace it
-        if vals == _OLD_RUNTIME_DEFAULT:
+        if name in {DEFAULT_RUNTIME_TEMPLATE, CUSTOM} and vals == _OLD_RUNTIME_DEFAULT:
             vals = BUILTIN_RUNTIME_TEMPLATES[DEFAULT_RUNTIME_TEMPLATE]
-        templates[name] = normalize_runtime(vals)
-    if not templates:
-        return None
-    order = [n for n in (doc.get("order") or list(templates)) if n in templates]
+        resolved[name] = normalize_runtime(vals)
+    templates = {n: v for n, v in resolved.items() if n != CUSTOM}
+    order = [n for n in (_as_list(doc.get("order")) or list(templates)) if n in templates]
     order += [n for n in templates if n not in order]
-    models = {m: dict(templates[s])
-              for m, s in (doc.get("model_defaults") or {}).items() if s in templates}
+    models = {m: dict(resolved[s])
+              for m, s in _as_mapping(doc.get("model_defaults")).items() if s in resolved}
+    if not templates:
+        if not models:
+            return None
+        templates = {name: dict(vals) for name, vals in BUILTIN_RUNTIME_TEMPLATES.items()}
+        order = [*templates]
     return {"templates": templates, "order": order, "models": models}
 
 
@@ -393,15 +415,19 @@ def load_runtime_settings() -> dict:
         doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, OSError):
         return _default_runtime_doc()
-    templates = {n: normalize_runtime(v) for n, v in (doc.get("templates") or {}).items()}
+    doc = _as_mapping(doc)
+    templates = {n: normalize_runtime(v)
+                 for n, v in _as_mapping(doc.get("templates")).items()}
     if not templates:
         templates = {name: dict(vals) for name, vals in BUILTIN_RUNTIME_TEMPLATES.items()}
-    order = [n for n in (doc.get("order") or list(templates)) if n in templates]
+    order = [n for n in (_as_list(doc.get("order")) or list(templates)) if n in templates]
     order += [n for n in templates if n not in order]
-    models = {m: normalize_runtime(v) for m, v in (doc.get("models") or {}).items()}
+    models = {m: normalize_runtime(v) for m, v in _as_mapping(doc.get("models")).items()}
     return {"templates": templates, "order": order, "models": models}
 
 
 def save_runtime_settings(doc: dict) -> None:
-    _runtime_settings_path().write_text(
-        yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    # Atomic: every control in the editor writes on change, so a slider drag
+    # rewrites this file continuously — a torn write would lose every model.
+    _write_atomic(_runtime_settings_path(),
+                  yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))
