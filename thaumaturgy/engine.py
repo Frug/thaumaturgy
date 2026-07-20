@@ -271,6 +271,9 @@ class LlamaServer:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not self.running:
+                # Clear the handles too, or the page reports the dead process's
+                # model and settings as though they were live.
+                self.stop()
                 raise RuntimeError("llama-server exited during startup")
             try:
                 if requests.get(f"{self.base_url}/health", timeout=2).status_code == 200:
@@ -282,13 +285,22 @@ class LlamaServer:
         raise RuntimeError("llama-server did not become ready in time")
 
     def _read_props(self) -> None:
+        """Learn the effective context and template capabilities from /props.
+
+        Nothing here may raise: this runs after the subprocess is up and the
+        pidfile is written, so an escape would leave the caller believing the
+        load failed while the server serves.
+        """
         try:
             props = requests.get(f"{self.base_url}/props", timeout=10).json()
-            self.n_ctx = (props.get("default_generation_settings", {}).get("n_ctx")
-                          or props.get("n_ctx"))
-            caps = props.get("chat_template_caps") or {}
+            if not isinstance(props, dict):
+                props = {}
+            gen = props.get("default_generation_settings")
+            gen = gen if isinstance(gen, dict) else {}
+            self.n_ctx = gen.get("n_ctx") or props.get("n_ctx")
+            caps = props.get("chat_template_caps")
             self.chat_template_caps = caps if isinstance(caps, dict) else {}
-        except (requests.RequestException, ValueError):
+        except Exception:  # noqa: BLE001 - a bad /props must not fail the load
             self.n_ctx = None
             self.chat_template_caps = {}
 
@@ -439,24 +451,34 @@ class LlamaServer:
             return False
         if self.reasoning == "on":
             return True
-        # auto: llama.cpp decides from the template, so ask what it parsed.
-        return bool(self.chat_template_caps.get("supports_preserve_reasoning"))
+        # auto: llama.cpp decides from the template, so ask what it parsed. A
+        # /props that failed at load leaves no caps, and retrying beats reading
+        # "auto" as "no thinking" for the whole life of the server.
+        if not self.chat_template_caps and self.running:
+            self._read_props()
+        return self.chat_template_caps.get("supports_preserve_reasoning") is True
 
     def _max_tokens(self, max_new_tokens: int) -> int | None:
-        """The request's token cap, or None to leave it to llama.cpp.
+        """The request's token cap, or None if there is nothing to cap with.
 
         max_tokens bounds thinking and reply together, but the setting means
         reply tokens, so with a thinking budget the two are added to keep the
-        reply's allowance whole. An unrestricted budget has no honest total —
-        any number we picked would silently cap thinking instead — so the field
-        is omitted and llama.cpp's own default (infinity, then the context
-        limit) applies.
+        reply's allowance whole. An unrestricted budget has no such total: any
+        smaller number would cap thinking rather than the reply. The context
+        window is then the only honest bound — and an explicit one, because
+        omitting the field leaves a runaway generation with no stop button.
         """
         if not self.thinking_enabled():
             return max_new_tokens
         if self.reasoning_budget < 0:
-            return None
+            return self.n_ctx or None
         return max_new_tokens + self.reasoning_budget
+
+    def _token_limit(self) -> str:
+        """Which setting a "length" finish should be blamed on."""
+        if self.thinking_enabled() and self.reasoning_budget < 0:
+            return "context"
+        return "max_new_tokens"
 
     def stream_chat(self, messages: list[dict], params: dict | None = None):
         """Yield streaming chat events from /v1/chat/completions (SSE).
@@ -508,10 +530,8 @@ class LlamaServer:
                 if content:
                     yield {"type": "delta", "text": content}
         if finish_reason:
-            # Whether our cap was in play decides what "length" means to the
-            # reader: Max new tokens, or the context window filling up.
             yield {"type": "finish", "reason": finish_reason,
-                   "capped": max_tokens is not None}
+                   "limit": self._token_limit()}
 
 
 _reap_stale()  # clean up a llama-server orphaned by a previous (reloaded) instance
