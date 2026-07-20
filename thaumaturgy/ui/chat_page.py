@@ -44,20 +44,25 @@ def _avatar(m: dict):
         ui.label((m.get("name") or "?")[0].upper())
 
 
-def _finish_warning(reason: str | None) -> str | None:
+def _finish_warning(reason: str | None, capped: bool = True) -> str | None:
     if not reason or reason == "stop":
         return None
     if reason == "error":
         return "Generation failed before the model finished replying."
     if reason == "length":
-        return "Generation stopped because Max new tokens was reached."
+        if capped:
+            return "Generation stopped because Max new tokens was reached."
+        # No cap was sent: thinking is unrestricted, so this is the context.
+        return ("Generation stopped because the context window filled up. "
+                "Max new tokens doesn't apply while the reasoning budget is "
+                "unrestricted.")
     return f"Generation finished with reason: {reason}."
 
 
 def _message_warning(m: dict) -> str | None:
     if m.get("generation_error"):
         return f"Generation failed: {m['generation_error']}"
-    return _finish_warning(m.get("finish_reason"))
+    return _finish_warning(m.get("finish_reason"), m.get("finish_capped", True))
 
 
 def _join_blocks(parts: list[str]) -> str:
@@ -191,6 +196,7 @@ def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict
                 kind = event.get("type")
                 if kind == "finish":
                     assistant["finish_reason"] = event.get("reason")
+                    assistant["finish_capped"] = event.get("capped", True)
                     continue
                 delta = event.get("text", "")
                 if not delta:

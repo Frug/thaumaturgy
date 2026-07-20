@@ -177,6 +177,7 @@ class LlamaServer:
         self.model: str | None = None
         self.n_ctx: int | None = None  # trained/effective context, learned after load
         self.chat_template_caps: dict = {}
+        self.reasoning: str = "auto"  # thinking mode the server was launched with
         self.reasoning_budget: int = -1  # thinking cap the server was launched with
         self._log_lines: deque[str] = deque(maxlen=SERVER_LOG_LIMIT)
         self._log_lock = threading.Lock()
@@ -246,6 +247,7 @@ class LlamaServer:
         # message gives the model a cue to wrap up. Pointless with no budget.
         if reasoning_budget > 0 and reasoning_budget_message:
             cmd += ["--reasoning-budget-message", reasoning_budget_message]
+        self.reasoning = reasoning
         self.reasoning_budget = reasoning_budget
         self._clear_output()
         self._append_output("$ " + " ".join(shlex.quote(str(part)) for part in cmd))
@@ -330,6 +332,7 @@ class LlamaServer:
         self.model = None
         self.n_ctx = None
         self.chat_template_caps = {}
+        self.reasoning = "auto"
         self.reasoning_budget = -1
         _pidfile().unlink(missing_ok=True)
 
@@ -430,15 +433,30 @@ class LlamaServer:
 
         return self._estimate_tokens(prompt), False
 
-    def _max_tokens(self, max_new_tokens: int) -> int:
-        """Grow the request cap to cover thinking as well as the reply.
+    def thinking_enabled(self) -> bool:
+        """Whether the loaded model is expected to emit reasoning."""
+        if self.reasoning == "off":
+            return False
+        if self.reasoning == "on":
+            return True
+        # auto: llama.cpp decides from the template, so ask what it parsed.
+        return bool(self.chat_template_caps.get("supports_preserve_reasoning"))
 
-        max_tokens caps thinking and reply together, so a bare max_new_tokens
-        lets a long thought eat the whole allowance and leave nothing to answer
-        with. A thinking model needs the sum. With no budget set (-1) there is
-        no bound to add, and a long enough thought can still exhaust the cap.
+    def _max_tokens(self, max_new_tokens: int) -> int | None:
+        """The request's token cap, or None to leave it to llama.cpp.
+
+        max_tokens bounds thinking and reply together, but the setting means
+        reply tokens, so with a thinking budget the two are added to keep the
+        reply's allowance whole. An unrestricted budget has no honest total —
+        any number we picked would silently cap thinking instead — so the field
+        is omitted and llama.cpp's own default (infinity, then the context
+        limit) applies.
         """
-        return max_new_tokens + max(0, self.reasoning_budget)
+        if not self.thinking_enabled():
+            return max_new_tokens
+        if self.reasoning_budget < 0:
+            return None
+        return max_new_tokens + self.reasoning_budget
 
     def stream_chat(self, messages: list[dict], params: dict | None = None):
         """Yield streaming chat events from /v1/chat/completions (SSE).
@@ -456,8 +474,10 @@ class LlamaServer:
             "top_k": int(p.get("top_k", 40)),
             "min_p": p.get("min_p", 0.05),
             "repeat_penalty": p.get("repetition_penalty", 1.1),
-            "max_tokens": self._max_tokens(int(p.get("max_new_tokens", 512))),
         }
+        max_tokens = self._max_tokens(int(p.get("max_new_tokens", 512)))
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         finish_reason = None
         with requests.post(f"{self.base_url}/v1/chat/completions",
                            json=body, stream=True, timeout=600) as r:
@@ -488,7 +508,10 @@ class LlamaServer:
                 if content:
                     yield {"type": "delta", "text": content}
         if finish_reason:
-            yield {"type": "finish", "reason": finish_reason}
+            # Whether our cap was in play decides what "length" means to the
+            # reader: Max new tokens, or the context window filling up.
+            yield {"type": "finish", "reason": finish_reason,
+                   "capped": max_tokens is not None}
 
 
 _reap_stale()  # clean up a llama-server orphaned by a previous (reloaded) instance
