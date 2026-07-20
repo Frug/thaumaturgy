@@ -3,7 +3,7 @@
 The left panel scans data/models for GGUFs and loads/unloads them via the engine
 (spawns llama-server). The right panel shows the selected parameter set (read-only)
 and, in edit mode, the parameter-set editor. VRAM is a rough pre-load estimate;
-context is detected from the server after load.
+the detected max context comes from the GGUF metadata.
 """
 
 from nicegui import app, run, ui
@@ -30,6 +30,13 @@ UNKNOWN_QUANT = "__unknown__"
 CTX_HELP = (
     "Context length. 0 = auto for llama.cpp (requires gpu-layers=-1), 8192 for "
     "other loaders. Common values: 4096, 8192, 16384, 32768, 65536, 131072."
+)
+
+VRAM_HELP = (
+    "A rough estimate of GPU memory use. It needs the runtime profile to pin "
+    "both values it depends on: GPU layers set to 0 or higher (not -1/auto) "
+    "and a context size above 0. Otherwise it reads “auto” — llama.cpp decides "
+    "those at load time, so there is nothing to estimate from."
 )
 
 # ── Generation presets (right column) ───────────────────────────────────────────
@@ -100,6 +107,16 @@ def _runtime_gpu_label(vals: dict) -> str:
     if gpu == 0:
         return "CPU only"
     return f"{gpu} layers"
+
+
+def _runtime_status_label(selected: str | None) -> str:
+    """Load state, naming the loaded model when it isn't the selected one."""
+    if not engine.server.running:
+        return "Not loaded"
+    loaded = engine.server.model
+    if loaded and selected and loaded != selected:
+        return f"Loaded ({loaded})"
+    return "Loaded"
 
 
 def _runtime_context_label(vals: dict) -> str:
@@ -900,24 +917,29 @@ def render():
                 f"Delete parameter set “{state['editing']}”? This can't be undone.")
             confirm_dialog.open()
 
-    def estimate_vram(vals: dict | None = None) -> float | None:
+    def estimate_vram(vals: dict | None = None) -> float | str:
+        """Rough VRAM estimate, or a word saying why there isn't one — a
+        "~ 0.0 GB" built from missing inputs reads as an answer."""
         model = current_model()
         if not model:
-            return 0.0
+            return "no model"
         runtime = vals or active_runtime()
         gpu_layers = int(runtime.get("gpu_layers", -1))
         ctx_size = int(runtime.get("context_size", 0))
         if gpu_layers < 0 or ctx_size == 0:
-            return None
+            return "auto"
+        size_gb = _file_size_gb(model)
+        if not size_gb:
+            return "unknown"
         frac = min(1.0, gpu_layers / 100)
-        weights = _file_size_gb(model) * frac
+        weights = size_gb * frac
         per = {"fp16": 2.0, "q8_0": 1.0, "q4_0": 0.5}[runtime.get("cache_type", "fp16")]
         kv_gb = ctx_size * 48 * per * 128 / 1e9
         return weights + kv_gb + 0.6
 
     def vram_label(vals: dict | None = None) -> str:
         vram = estimate_vram(vals)
-        return "auto" if vram is None else f"~ {vram:.1f} GB"
+        return vram if isinstance(vram, str) else f"~ {vram:.1f} GB"
 
     def summary_row(label: str, value: str):
         with ui.row().classes("w-full items-start justify-between gap-3 no-wrap"):
@@ -936,12 +958,17 @@ def render():
 
                 with ui.column().classes("w-full gap-2"):
                     ui.label("Model").classes("text-xs text-muted uppercase tracking-wide")
-                    summary_row("Model", current_model() or "None selected")
-                    summary_row("Runtime status", "Loaded" if engine.server.running else "Not loaded")
-                    detected = engine.server.n_ctx or (engine.trained_ctx(current_model())
-                                                       if current_model() else None)
+                    model_name = current_model()
+                    summary_row("Model", model_name or "None selected")
+                    summary_row("Runtime status", _runtime_status_label(model_name))
+                    # From metadata, not the server: /props n_ctx is the window
+                    # llama-server was launched with, not the model's limit.
+                    detected = engine.trained_ctx(model_name) if model_name else None
                     summary_row("Detected max context",
                                 f"{detected:,} tokens" if detected else "Unknown")
+                    if engine.server.running and engine.server.n_ctx:
+                        summary_row("Active context window",
+                                    f"{engine.server.n_ctx:,} tokens")
 
                 ui.separator()
                 with ui.column().classes("w-full gap-2"):
@@ -954,7 +981,6 @@ def render():
                     summary_row("Reasoning", _runtime_reasoning_label(runtime))
                     summary_row("Reasoning budget", _runtime_reasoning_budget_label(runtime))
                     summary_row("Budget message", _runtime_budget_message_label(runtime))
-                    summary_row("Estimated VRAM", vram_label(runtime))
 
                 ui.separator()
                 with ui.column().classes("w-full gap-2"):
@@ -962,6 +988,16 @@ def render():
                     summary_row("Parameter set", state["active"])
                     for key, label, _minv, _maxv, _step, dec in PARAMS:
                         summary_row(label, _fmt(dec)(params.get(key, PRESETS[DEFAULT_PRESET][key])))
+
+                ui.separator()
+                with ui.row().classes("w-full items-center gap-2 p-3 rounded-lg") \
+                        .style("background: rgba(52,97,140,0.10)"):
+                    ui.icon("memory").classes("text-primary")
+                    ui.label("Estimated VRAM").classes("text-sm")
+                    with ui.icon("help_outline").classes("text-sm text-muted cursor-help"):
+                        ui.tooltip(VRAM_HELP).classes("max-w-xs text-xs leading-snug")
+                    ui.label(vram_label(runtime)) \
+                        .classes("ml-auto text-base font-semibold font-mono")
                 return
 
             if state["mode"] == "param_edit":
@@ -1057,12 +1093,6 @@ def render():
                      "Only used when the budget is above 0.") \
                 .classes("text-xs text-muted leading-snug")
 
-            with ui.row().classes("w-full items-center gap-2 mt-1 p-3 rounded-lg") \
-                    .style("background: rgba(52,97,140,0.10)"):
-                ui.icon("memory").classes("text-primary")
-                ui.label("Estimated VRAM").classes("text-sm")
-                vram = ui.label().classes("ml-auto text-base font-semibold font-mono")
-
             def save_runtime_edit(_=None):
                 budget = controls["reasoning_budget"].value
                 runtime_sets[state["runtime_editing"]] = {
@@ -1076,7 +1106,6 @@ def render():
                         (controls["reasoning_budget_message"].value or "").strip(),
                 }
                 persist_runtime()
-                vram.text = vram_label(runtime_sets[state["runtime_editing"]])
 
             for control in controls.values():
                 control.on_value_change(save_runtime_edit)
