@@ -279,10 +279,16 @@ def save_presets(doc: dict) -> None:
         yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
-# ── Runtime profiles (model loading settings) ───────────────────────────────
-# These persist the llama-server launch settings that vary by model or machine:
-# GPU layers, requested context size, KV-cache type, chat template override, and
-# llama.cpp reasoning controls.
+# ── Runtime settings (model loading settings) ───────────────────────────────
+# The llama-server launch settings: GPU layers, requested context size, KV-cache
+# type, chat template override, and llama.cpp reasoning controls.
+#
+# These belong to a model, not to a shared profile. GPU layers is an absolute
+# count bounded by the model's block count, context size by its trained context,
+# and the chat template is a property of the model — the same numbers mean
+# different things, or nothing, on a different model. So each model owns its
+# settings, and the named sets are demoted to templates: starting points you
+# copy onto a model, not a live binding.
 
 # Injected as the model's own last thought before the forced end-of-thinking
 # tag, so it has to read in its voice. Wording follows vLLM's; llama.cpp ships
@@ -290,7 +296,7 @@ def save_presets(doc: dict) -> None:
 # phrasing over another.
 DEFAULT_REASONING_BUDGET_MESSAGE = "Let me stop thinking and answer now."
 
-BUILTIN_RUNTIME_PROFILES = {
+BUILTIN_RUNTIME_TEMPLATES = {
     "Default": dict(
         gpu_layers=-1,
         context_size=0,
@@ -301,57 +307,101 @@ BUILTIN_RUNTIME_PROFILES = {
         reasoning_budget_message=DEFAULT_REASONING_BUDGET_MESSAGE,
     ),
 }
-DEFAULT_RUNTIME_PROFILE = "Default"
+DEFAULT_RUNTIME_TEMPLATE = "Default"
 _OLD_RUNTIME_DEFAULT = dict(gpu_layers=100, context_size=8192, cache_type="fp16")
+
+RUNTIME_CACHE_TYPES = ("fp16", "q8_0", "q4_0")
+RUNTIME_CHAT_TEMPLATES = ("auto", "gemma")
+RUNTIME_REASONING_MODES = ("auto", "off", "on")
+
+
+def _runtime_settings_path():
+    return data_dir() / "runtime_settings.yaml"
 
 
 def _runtime_profiles_path():
+    """Pre-per-model layout; read once to migrate, never written again."""
     return data_dir() / "runtime_profiles.yaml"
 
 
-def _default_runtime_profiles_doc() -> dict:
-    sets = {name: dict(vals) for name, vals in BUILTIN_RUNTIME_PROFILES.items()}
-    sets[CUSTOM] = dict(BUILTIN_RUNTIME_PROFILES[DEFAULT_RUNTIME_PROFILE])
-    return {"sets": sets, "order": [*BUILTIN_RUNTIME_PROFILES, CUSTOM], "model_defaults": {}}
+def normalize_runtime(vals: dict | None) -> dict:
+    """Coerce one settings dict into every field, with sane types."""
+    src = vals or {}
+    out = dict(BUILTIN_RUNTIME_TEMPLATES[DEFAULT_RUNTIME_TEMPLATE])
+    for key, cast in (("gpu_layers", int), ("context_size", int),
+                      ("reasoning_budget", int)):
+        try:
+            out[key] = cast(src.get(key, out[key]))
+        except (TypeError, ValueError):
+            pass
+    for key, allowed in (("cache_type", RUNTIME_CACHE_TYPES),
+                         ("chat_template", RUNTIME_CHAT_TEMPLATES),
+                         ("reasoning", RUNTIME_REASONING_MODES)):
+        if src.get(key) in allowed:
+            out[key] = src[key]
+    out["reasoning_budget_message"] = str(
+        src.get("reasoning_budget_message", out["reasoning_budget_message"]))
+    return out
 
 
-def load_runtime_profiles() -> dict:
-    """Return {sets, order, model_defaults}, seeding defaults on first run."""
+def _default_runtime_doc() -> dict:
+    templates = {name: dict(vals) for name, vals in BUILTIN_RUNTIME_TEMPLATES.items()}
+    return {"templates": templates, "order": [*BUILTIN_RUNTIME_TEMPLATES], "models": {}}
+
+
+def _migrate_runtime_profiles() -> dict | None:
+    """Convert the old profile-per-model-pin layout into per-model settings.
+
+    Each model that pinned a profile keeps exactly the values it was loading
+    with, materialized as its own; the profiles carry over as templates. The
+    old file is left on disk untouched.
+    """
     p = _runtime_profiles_path()
     if not p.exists():
-        doc = _default_runtime_profiles_doc()
-        save_runtime_profiles(doc)
+        return None
+    try:
+        doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return None
+    sets = doc.get("sets") or {}
+    if not sets:
+        return None
+    templates = {}
+    for name, vals in sets.items():
+        if name == CUSTOM:
+            continue  # a scratch profile; per-model settings replace it
+        if vals == _OLD_RUNTIME_DEFAULT:
+            vals = BUILTIN_RUNTIME_TEMPLATES[DEFAULT_RUNTIME_TEMPLATE]
+        templates[name] = normalize_runtime(vals)
+    if not templates:
+        return None
+    order = [n for n in (doc.get("order") or list(templates)) if n in templates]
+    order += [n for n in templates if n not in order]
+    models = {m: dict(templates[s])
+              for m, s in (doc.get("model_defaults") or {}).items() if s in templates}
+    return {"templates": templates, "order": order, "models": models}
+
+
+def load_runtime_settings() -> dict:
+    """Return {templates, order, models}, migrating or seeding on first run."""
+    p = _runtime_settings_path()
+    if not p.exists():
+        doc = _migrate_runtime_profiles() or _default_runtime_doc()
+        save_runtime_settings(doc)
         return doc
     try:
         doc = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
     except (yaml.YAMLError, OSError):
-        return _default_runtime_profiles_doc()
-    sets = doc.get("sets") or {}
-    if not sets:
-        return _default_runtime_profiles_doc()
-    changed = False
-    for name, vals in sets.items():
-        if name in {DEFAULT_RUNTIME_PROFILE, CUSTOM} and vals == _OLD_RUNTIME_DEFAULT:
-            vals.update(BUILTIN_RUNTIME_PROFILES[DEFAULT_RUNTIME_PROFILE])
-            changed = True
-        before = dict(vals)
-        vals.setdefault("gpu_layers", -1)
-        vals.setdefault("context_size", 0)
-        vals.setdefault("cache_type", "fp16")
-        vals.setdefault("chat_template", "auto")
-        vals.setdefault("reasoning", "auto")
-        vals.setdefault("reasoning_budget", -1)
-        vals.setdefault("reasoning_budget_message", DEFAULT_REASONING_BUDGET_MESSAGE)
-        changed = changed or vals != before
-    order = [n for n in (doc.get("order") or list(sets)) if n in sets]
-    order += [n for n in sets if n not in order]
-    model_defaults = {m: s for m, s in (doc.get("model_defaults") or {}).items() if s in sets}
-    out = {"sets": sets, "order": order, "model_defaults": model_defaults}
-    if changed:
-        save_runtime_profiles(out)
-    return out
+        return _default_runtime_doc()
+    templates = {n: normalize_runtime(v) for n, v in (doc.get("templates") or {}).items()}
+    if not templates:
+        templates = {name: dict(vals) for name, vals in BUILTIN_RUNTIME_TEMPLATES.items()}
+    order = [n for n in (doc.get("order") or list(templates)) if n in templates]
+    order += [n for n in templates if n not in order]
+    models = {m: normalize_runtime(v) for m, v in (doc.get("models") or {}).items()}
+    return {"templates": templates, "order": order, "models": models}
 
 
-def save_runtime_profiles(doc: dict) -> None:
-    _runtime_profiles_path().write_text(
+def save_runtime_settings(doc: dict) -> None:
+    _runtime_settings_path().write_text(
         yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), encoding="utf-8")
