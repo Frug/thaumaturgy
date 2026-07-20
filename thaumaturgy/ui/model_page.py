@@ -33,10 +33,10 @@ CTX_HELP = (
 )
 
 VRAM_HELP = (
-    "A rough estimate of GPU memory use. Shown only when the runtime profile "
-    "pins both values it needs: GPU layers set to 0 or higher (not -1/auto) and "
-    "a context size above 0. On auto, llama.cpp decides at load time and there "
-    "is nothing to estimate from."
+    "A rough estimate of GPU memory use. It needs the runtime profile to pin "
+    "both values it depends on: GPU layers set to 0 or higher (not -1/auto) "
+    "and a context size above 0. Otherwise it reads “auto” — llama.cpp decides "
+    "those at load time, so there is nothing to estimate from."
 )
 
 # ── Generation presets (right column) ───────────────────────────────────────────
@@ -107,6 +107,16 @@ def _runtime_gpu_label(vals: dict) -> str:
     if gpu == 0:
         return "CPU only"
     return f"{gpu} layers"
+
+
+def _runtime_status_label(selected: str | None) -> str:
+    """Load state, naming the loaded model when it isn't the selected one."""
+    if not engine.server.running:
+        return "Not loaded"
+    loaded = engine.server.model
+    if loaded and selected and loaded != selected:
+        return f"Loaded ({loaded})"
+    return "Loaded"
 
 
 def _runtime_context_label(vals: dict) -> str:
@@ -907,24 +917,33 @@ def render():
                 f"Delete parameter set “{state['editing']}”? This can't be undone.")
             confirm_dialog.open()
 
-    def estimate_vram(vals: dict | None = None) -> float | None:
+    def estimate_vram(vals: dict | None = None) -> float | str:
+        """Rough VRAM estimate, or a word saying why there isn't one.
+
+        Every unknown returns a reason rather than a number: a confident
+        "~ 0.0 GB" under a memory icon reads as an answer, and the weights term
+        silently vanishing (unreadable file) is worse than saying nothing.
+        """
         model = current_model()
         if not model:
-            return 0.0
+            return "no model"
         runtime = vals or active_runtime()
         gpu_layers = int(runtime.get("gpu_layers", -1))
         ctx_size = int(runtime.get("context_size", 0))
         if gpu_layers < 0 or ctx_size == 0:
-            return None
+            return "auto"
+        size_gb = _file_size_gb(model)
+        if not size_gb:
+            return "unknown"
         frac = min(1.0, gpu_layers / 100)
-        weights = _file_size_gb(model) * frac
+        weights = size_gb * frac
         per = {"fp16": 2.0, "q8_0": 1.0, "q4_0": 0.5}[runtime.get("cache_type", "fp16")]
         kv_gb = ctx_size * 48 * per * 128 / 1e9
         return weights + kv_gb + 0.6
 
     def vram_label(vals: dict | None = None) -> str:
         vram = estimate_vram(vals)
-        return "auto" if vram is None else f"~ {vram:.1f} GB"
+        return vram if isinstance(vram, str) else f"~ {vram:.1f} GB"
 
     def summary_row(label: str, value: str):
         with ui.row().classes("w-full items-start justify-between gap-3 no-wrap"):
@@ -943,14 +962,19 @@ def render():
 
                 with ui.column().classes("w-full gap-2"):
                     ui.label("Model").classes("text-xs text-muted uppercase tracking-wide")
-                    summary_row("Model", current_model() or "None selected")
-                    summary_row("Runtime status", "Loaded" if engine.server.running else "Not loaded")
+                    model_name = current_model()
+                    summary_row("Model", model_name or "None selected")
+                    summary_row("Runtime status", _runtime_status_label(model_name))
                     # The model's own trained limit, not the window the server was
                     # launched with — /props reports the latter.
-                    model_name = current_model()
                     detected = engine.trained_ctx(model_name) if model_name else None
                     summary_row("Detected max context",
                                 f"{detected:,} tokens" if detected else "Unknown")
+                    # What llama.cpp actually gave us, which the profile's context
+                    # size doesn't tell you when it's set to auto.
+                    if engine.server.running and engine.server.n_ctx:
+                        summary_row("Active context window",
+                                    f"{engine.server.n_ctx:,} tokens")
 
                 ui.separator()
                 with ui.column().classes("w-full gap-2"):

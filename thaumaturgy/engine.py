@@ -117,35 +117,55 @@ def delete_model(name: str) -> list[str]:
     for path in files:
         path.unlink(missing_ok=True)
         removed.append(path.name)
-        _ctx_cache.pop(path.name, None)
-        _max_gpu_layers_cache.pop(path.name, None)
+        _drop_cached(path.name)
     return removed
 
 
-_ctx_cache: dict[str, int | None] = {}
-_max_gpu_layers_cache: dict[str, int | None] = {}
+# Keyed by (name, mtime_ns, size) so a re-downloaded or still-copying file is
+# re-read rather than serving the previous file's metadata.
+_ctx_cache: dict[tuple, int | None] = {}
+_max_gpu_layers_cache: dict[tuple, int | None] = {}
+
+
+def _drop_cached(name: str) -> None:
+    for cache in (_ctx_cache, _max_gpu_layers_cache):
+        for key in [k for k in cache if k[0] == name]:
+            del cache[key]
+
+
+def _read_metadata(cache: dict, model_name: str, read) -> int | None:
+    """Cache a GGUF metadata read, keyed on the file's identity.
+
+    Failures are not cached: a partially-copied download or a briefly
+    unavailable mount would otherwise pin the answer to None for the life of
+    the process. The parser raises struct.error / KeyError / ValueError on a
+    malformed or truncated file, and the callers render into the page on every
+    refresh, so nothing may escape here.
+    """
+    path = models_dir() / model_name
+    try:
+        stat = path.stat()
+        key = (model_name, stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        return None
+    if key not in cache:
+        try:
+            cache[key] = read(path)
+        except Exception:  # noqa: BLE001 - any malformed GGUF, never a broken page
+            return None
+    return cache[key]
 
 
 def trained_ctx(model_name: str) -> int | None:
     """Model's trained context length, read from GGUF metadata (cached)."""
-    if model_name not in _ctx_cache:
-        try:
-            _ctx_cache[model_name] = metadata_gguf.read_context_length(
-                models_dir() / model_name)
-        except OSError:
-            _ctx_cache[model_name] = None
-    return _ctx_cache[model_name]
+    return _read_metadata(_ctx_cache, model_name, metadata_gguf.read_context_length)
 
 
 def max_gpu_layers(model_name: str) -> int | None:
     """Maximum GPU layers for llama.cpp, based on GGUF block count."""
-    if model_name not in _max_gpu_layers_cache:
-        try:
-            blocks = metadata_gguf.read_block_count(models_dir() / model_name)
-            _max_gpu_layers_cache[model_name] = blocks + 1 if blocks is not None else None
-        except OSError:
-            _max_gpu_layers_cache[model_name] = None
-    return _max_gpu_layers_cache[model_name]
+    blocks = _read_metadata(_max_gpu_layers_cache, model_name,
+                            metadata_gguf.read_block_count)
+    return blocks + 1 if blocks is not None else None
 
 
 def _free_port() -> int:
