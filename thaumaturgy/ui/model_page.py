@@ -190,8 +190,8 @@ def _model_card(bridge):
             ui.label("Model").classes("text-lg font-semibold")
             ui.badge("llama.cpp").props("color=secondary").classes("font-mono")
 
-        # Built early for the closures below, but filled in stages: the load
-        # buttons need the download dialog, which is defined further down.
+        # Filled in stages: the load buttons need the download dialog, which is
+        # defined further down.
         runtime_box = ui.column().classes("tg-pset-box w-full gap-2")
         with runtime_box:
             ui.label("Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
@@ -476,7 +476,6 @@ def _model_card(bridge):
         bridge["param_select"] = param_set
 
         def refresh_runtime_owner():
-            # The dropdown above already names the model; say what's scoped to it.
             runtime_owner.text = ("Settings are saved per model."
                                   if bridge["current_model"]() else "Select a model.")
 
@@ -592,8 +591,8 @@ def render():
         "mode": "view",
         "active": start,
         "editing": start,
-        # Template highlighted in the edit-mode list; templates are copied onto
-        # the model, never bound to it, so this is selection only.
+        # Highlighted in the edit-mode list only; templates are copied onto a
+        # model, never bound to it.
         "template": runtime_order[0] if runtime_order else DEFAULT_RUNTIME_TEMPLATE,
     }
 
@@ -620,9 +619,8 @@ def render():
     def model_runtime(model_name: str | None) -> dict:
         """The model's saved load settings, or the default template's values.
 
-        Read-only: browsing the model dropdown renders these, and storing an
-        entry per model merely looked at would grow the file with every model
-        ever selected. Entries appear when something actually writes one.
+        Read-only: an entry is stored only when something writes one, so merely
+        browsing the model dropdown doesn't grow the file.
         """
         if model_name and model_name in runtime_models:
             return runtime_models[model_name]
@@ -660,7 +658,7 @@ def render():
             refresh_selectors()
             refresh_preview()
         if state["mode"] == "runtime_edit":
-            # The panel edits whichever model is selected — rebuild for the new one.
+            # The panel edits whichever model is selected.
             details_panel.refresh()
 
     bridge["select_model_defaults"] = select_model_defaults
@@ -768,8 +766,7 @@ def render():
     def save_as_template(name: str):
         """Save the selected model's current settings under a template name.
 
-        Reusing an existing name overwrites it — that doubles as the way to
-        update a template, and as the way to rename one alongside Delete.
+        Reusing a name overwrites it; that is also how a template is updated.
         """
         m = current_model()
         name = (name or "").strip()
@@ -811,7 +808,6 @@ def render():
         persist_params()
         sets_panel.refresh()
         return True
-
 
     def delete_set():
         name = state["editing"]
@@ -866,8 +862,8 @@ def render():
                 .props("color=negative unelevated")
 
     def ask_delete():
-        # Branch on mode alone, exactly as the Delete button does, or the prompt
-        # can name one thing while the button deletes another.
+        # Branch on mode alone, as the Delete button does, or the prompt can
+        # name one thing while the button deletes another.
         if state["mode"] == "runtime_edit":
             confirm_label.text = (
                 f"Delete template “{state['template']}”? This can't be undone.")
@@ -878,8 +874,8 @@ def render():
             confirm_dialog.open()
 
     def estimate_vram(vals: dict | None = None) -> float | str:
-        """Rough VRAM estimate, or a word saying why there isn't one — a
-        "~ 0.0 GB" built from missing inputs reads as an answer."""
+        """Rough VRAM estimate, or a word saying why there isn't one; a
+        "~ 0.0 GB" built from missing inputs would read as an answer."""
         model = current_model()
         if not model:
             return "no model"
@@ -1003,9 +999,8 @@ def render():
 
             controls = {}
             blocks = engine.max_gpu_layers(edited_model)
-            # Never clamp the stored value against the fallback ceiling: a
-            # transient metadata failure would otherwise truncate a legitimate
-            # setting to 100 and leave no way to type it back in.
+            # Never clamp the stored value to the fallback ceiling: a transient
+            # metadata failure would truncate a legitimate setting to 100.
             ceiling = max(blocks or FALLBACK_MAX_GPU_LAYERS,
                           int(vals.get("gpu_layers", -1)))
             controls["gpu_layers"] = _slider_row("GPU layers", -1, ceiling, 1,
@@ -1058,8 +1053,8 @@ def render():
                 .classes("text-xs text-muted leading-snug")
 
             def save_runtime_edit(_=None):
-                # Guard against a control firing after the model moved on: the
-                # panel rebuilds per model, and this closure holds the old one.
+                # This closure holds the model the panel was built for; a
+                # control can still fire after the selection moved on.
                 if current_model() != edited_model:
                     return
                 budget = controls["reasoning_budget"].value

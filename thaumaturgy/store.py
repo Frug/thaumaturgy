@@ -293,12 +293,11 @@ def save_presets(doc: dict) -> None:
 # The llama-server launch settings: GPU layers, requested context size, KV-cache
 # type, chat template override, and llama.cpp reasoning controls.
 #
-# These belong to a model, not to a shared profile. GPU layers is an absolute
-# count bounded by the model's block count, context size by its trained context,
-# and the chat template is a property of the model — the same numbers mean
-# different things, or nothing, on a different model. So each model owns its
-# settings, and the named sets are demoted to templates: starting points you
-# copy onto a model, not a live binding.
+#
+# Each model owns its settings: the values are bounded by model properties
+# (block count, trained context, template), so the same numbers mean something
+# different on another model. Named sets are templates — starting points copied
+# onto a model, not a live binding.
 
 # Injected as the model's own last thought before the forced end-of-thinking
 # tag, so it has to read in its voice. Wording follows vLLM's; llama.cpp ships
@@ -335,11 +334,7 @@ def _runtime_profiles_path():
 
 
 def normalize_runtime(vals) -> dict:
-    """Coerce one settings dict into every field, with sane types.
-
-    Takes anything: these come straight from a hand-editable YAML file, and
-    this runs while building the model page.
-    """
+    """Coerce anything into a full settings dict; the YAML is hand-editable."""
     src = vals if isinstance(vals, dict) else {}
     out = dict(BUILTIN_RUNTIME_TEMPLATES[DEFAULT_RUNTIME_TEMPLATE])
     for key, cast in (("gpu_layers", int), ("context_size", int),
@@ -368,9 +363,8 @@ def _default_runtime_doc() -> dict:
 def _migrate_runtime_profiles() -> dict | None:
     """Convert the old profile-per-model-pin layout into per-model settings.
 
-    Each model that pinned a profile keeps exactly the values it was loading
-    with, materialized as its own; the profiles carry over as templates. The
-    old file is left on disk untouched.
+    A pinned profile's values become the model's own; profiles carry over as
+    templates. The old file is left on disk untouched.
     """
     p = _runtime_profiles_path()
     if not p.exists():
@@ -383,9 +377,8 @@ def _migrate_runtime_profiles() -> dict | None:
     sets = _as_mapping(sets)
     if not sets:
         return None
-    # Every profile is resolvable for pinned models, including Custom — it just
-    # doesn't survive as a template, being a scratch slot per-model settings
-    # replace. Dropping it here would silently reset the models pinned to it.
+    # Custom resolves for the models pinned to it, but doesn't survive as a
+    # template; dropping it here would silently reset those models.
     resolved = {}
     for name, vals in sets.items():
         if name in {DEFAULT_RUNTIME_TEMPLATE, CUSTOM} and vals == _OLD_RUNTIME_DEFAULT:
@@ -427,7 +420,7 @@ def load_runtime_settings() -> dict:
 
 
 def save_runtime_settings(doc: dict) -> None:
-    # Atomic: every control in the editor writes on change, so a slider drag
-    # rewrites this file continuously — a torn write would lose every model.
+    # Atomic: every editor control writes on change, so a slider drag rewrites
+    # this file continuously and a torn write would lose every model.
     _write_atomic(_runtime_settings_path(),
                   yaml.safe_dump(doc, sort_keys=False, allow_unicode=True))

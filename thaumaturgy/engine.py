@@ -134,7 +134,7 @@ def _drop_cached(name: str) -> None:
 
 
 def _read_metadata(cache: dict, model_name: str, read) -> int | None:
-    """Cache a GGUF metadata read; failures aren't cached, so a still-copying
+    """Cache a GGUF metadata read. Failures aren't cached, so a still-copying
     download isn't pinned to None for the life of the process."""
     path = models_dir() / model_name
     try:
@@ -287,9 +287,8 @@ class LlamaServer:
     def _read_props(self) -> None:
         """Learn the effective context and template capabilities from /props.
 
-        Nothing here may raise: this runs after the subprocess is up and the
-        pidfile is written, so an escape would leave the caller believing the
-        load failed while the server serves.
+        Never raises: it runs after the server is up, so an escape would report
+        a failed load for a server that is serving.
         """
         try:
             props = requests.get(f"{self.base_url}/props", timeout=10).json()
@@ -451,9 +450,9 @@ class LlamaServer:
             return False
         if self.reasoning == "on":
             return True
-        # auto: llama.cpp decides from the template, so ask what it parsed. A
-        # /props that failed at load leaves no caps, and retrying beats reading
-        # "auto" as "no thinking" for the whole life of the server.
+        # auto: llama.cpp decides from the template, so ask what it parsed.
+        # Retry when a /props failure at load left no caps, rather than reading
+        # "auto" as "no thinking" for the life of the server.
         if not self.chat_template_caps and self.running:
             self._read_props()
         return self.chat_template_caps.get("supports_preserve_reasoning") is True
@@ -462,11 +461,10 @@ class LlamaServer:
         """The request's token cap, or None if there is nothing to cap with.
 
         max_tokens bounds thinking and reply together, but the setting means
-        reply tokens, so with a thinking budget the two are added to keep the
-        reply's allowance whole. An unrestricted budget has no such total: any
-        smaller number would cap thinking rather than the reply. The context
-        window is then the only honest bound — and an explicit one, because
-        omitting the field leaves a runaway generation with no stop button.
+        reply tokens, so the thinking budget is added to keep the reply's
+        allowance whole. An unrestricted budget has no such total, leaving the
+        context window as the only bound — sent explicitly, since omitting the
+        field gives a runaway generation no stop button.
         """
         if not self.thinking_enabled():
             return max_new_tokens
