@@ -25,6 +25,11 @@ _CONTROL_RE = re.compile(
     r"<\|start\|>[ \t]*assistant|<\|(?:start|end|return|message)\|>|<channel\|>")
 _THOUGHT_CHANNELS = {"thought", "thinking", "reasoning", "analysis"}
 
+# Each streamed update re-parses the whole message as markdown, so cap the
+# re-render rate and prefer to land it on a newline boundary.
+_STREAM_MIN_INTERVAL = 0.2
+_STREAM_MAX_INTERVAL = 0.4
+
 
 def _rel_time(ts: float | None) -> str:
     if not ts:
@@ -427,6 +432,8 @@ def render():
     async def observe_generation(generation: dict):
         """Mirror a running generation into the transcript until it finishes."""
         last = None
+        last_render = 0.0
+        last_newlines = 0
         try:
             while not generation["done"]:
                 await asyncio.sleep(0.1)
@@ -437,10 +444,18 @@ def render():
                     return
                 assistant = generation["assistant"]
                 current = (assistant.get("text", ""), assistant.get("reasoning", ""))
-                if current != last:
+                if current == last:
+                    continue
+                now = time.monotonic()
+                elapsed = now - last_render
+                newlines = current[0].count("\n") + current[1].count("\n")
+                if elapsed >= _STREAM_MAX_INTERVAL or (
+                        elapsed >= _STREAM_MIN_INTERVAL and newlines > last_newlines):
                     view.update(*current)
                     scroll_bottom()
                     last = current
+                    last_render = now
+                    last_newlines = newlines
 
             if not observing(generation):
                 return
