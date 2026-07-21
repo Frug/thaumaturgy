@@ -74,6 +74,24 @@ def _join_blocks(parts: list[str]) -> str:
     return "\n\n".join(part.strip() for part in parts if part and part.strip()).strip()
 
 
+def _soften_indent(text: str) -> str:
+    """Drop per-line leading whitespace outside fenced code.
+
+    Models indent their scratchpad bullets, which markdown renders as code
+    blocks; flattening keeps them as lists and prose.
+    """
+    if "\n" not in text and not text[:1].isspace():
+        return text
+    out, fenced = [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append(line)
+        else:
+            out.append(line if fenced else line.lstrip())
+    return "\n".join(out)
+
+
 def _split_reasoning_channels(text: str) -> tuple[str, str]:
     """Split channel-marked output into visible text and reasoning text.
 
@@ -138,10 +156,10 @@ class _MessageView:
         return self.text_md.is_deleted
 
     def update(self, text: str, reasoning: str) -> None:
-        self.text_md.content = text
+        self.text_md.content = _soften_indent(text)
         if self.reasoning_box is None:
             return
-        self.reasoning_md.content = reasoning
+        self.reasoning_md.content = _soften_indent(reasoning)
         self.reasoning_box.set_visibility(bool(reasoning.strip()))
 
 
@@ -164,12 +182,12 @@ def _message(m: dict, on_scenario_click=None) -> _MessageView:
             bubble.style("background: rgba(52,97,140,0.10)")
         with bubble:
             text, reasoning = _message_text_and_reasoning(m)
-            md = ui.markdown(text).classes("text-sm leading-relaxed break-words")
+            md = ui.markdown(_soften_indent(text)).classes("text-sm leading-relaxed break-words")
             box = reasoning_md = None
             if not is_user:
                 box = ui.expansion("Thinking", icon="psychology").classes("w-full")
                 with box:
-                    reasoning_md = ui.markdown(reasoning).classes(
+                    reasoning_md = ui.markdown(_soften_indent(reasoning)).classes(
                         "text-xs leading-relaxed break-words text-muted")
                 box.set_visibility(bool(reasoning))
             warning = _message_warning(m)
