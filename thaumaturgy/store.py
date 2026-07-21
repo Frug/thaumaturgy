@@ -385,10 +385,12 @@ def _migrate_runtime_profiles() -> dict | None:
             vals = BUILTIN_RUNTIME_TEMPLATES[DEFAULT_RUNTIME_TEMPLATE]
         resolved[name] = normalize_runtime(vals)
     templates = {n: v for n, v in resolved.items() if n != CUSTOM}
-    order = [n for n in (_as_list(doc.get("order")) or list(templates)) if n in templates]
+    order = [n for n in (_as_list(doc.get("order")) or list(templates))
+             if isinstance(n, str) and n in templates]
     order += [n for n in templates if n not in order]
     models = {m: dict(resolved[s])
-              for m, s in _as_mapping(doc.get("model_defaults")).items() if s in resolved}
+              for m, s in _as_mapping(doc.get("model_defaults")).items()
+              if isinstance(s, str) and s in resolved}
     if not templates:
         if not models:
             return None
@@ -413,7 +415,8 @@ def load_runtime_settings() -> dict:
                  for n, v in _as_mapping(doc.get("templates")).items()}
     if not templates:
         templates = {name: dict(vals) for name, vals in BUILTIN_RUNTIME_TEMPLATES.items()}
-    order = [n for n in (_as_list(doc.get("order")) or list(templates)) if n in templates]
+    order = [n for n in (_as_list(doc.get("order")) or list(templates))
+             if isinstance(n, str) and n in templates]
     order += [n for n in templates if n not in order]
     models = {m: normalize_runtime(v) for m, v in _as_mapping(doc.get("models")).items()}
     return {"templates": templates, "order": order, "models": models}

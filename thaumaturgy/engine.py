@@ -179,6 +179,7 @@ class LlamaServer:
         self.chat_template_caps: dict = {}
         self.reasoning: str = "auto"  # thinking mode the server was launched with
         self.reasoning_budget: int = -1  # thinking cap the server was launched with
+        self.requested_ctx: int = 0  # the -c value; 0 means "let llama.cpp choose"
         self._log_lines: deque[str] = deque(maxlen=SERVER_LOG_LIMIT)
         self._log_lock = threading.Lock()
         self._log_thread: threading.Thread | None = None
@@ -249,6 +250,7 @@ class LlamaServer:
             cmd += ["--reasoning-budget-message", reasoning_budget_message]
         self.reasoning = reasoning
         self.reasoning_budget = reasoning_budget
+        self.requested_ctx = ctx_size
         self._clear_output()
         self._append_output("$ " + " ".join(shlex.quote(str(part)) for part in cmd))
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -345,6 +347,7 @@ class LlamaServer:
         self.chat_template_caps = {}
         self.reasoning = "auto"
         self.reasoning_budget = -1
+        self.requested_ctx = 0
         _pidfile().unlink(missing_ok=True)
 
     @staticmethod
@@ -457,6 +460,19 @@ class LlamaServer:
             self._read_props()
         return self.chat_template_caps.get("supports_preserve_reasoning") is True
 
+    def _context_limit(self) -> int | None:
+        """Best estimate of the loaded server's context window.
+
+        Prefer /props n_ctx, but that read can fail silently after load, so fall
+        back to the launched -c value and then the model's trained context —
+        anything to avoid an unbounded generation with no stop button.
+        """
+        if self.n_ctx:
+            return self.n_ctx
+        if self.requested_ctx > 0:
+            return self.requested_ctx
+        return trained_ctx(self.model) if self.model else None
+
     def _max_tokens(self, max_new_tokens: int) -> int | None:
         """The request's token cap, or None if there is nothing to cap with.
 
@@ -469,7 +485,7 @@ class LlamaServer:
         if not self.thinking_enabled():
             return max_new_tokens
         if self.reasoning_budget < 0:
-            return self.n_ctx or None
+            return self._context_limit()
         return max_new_tokens + self.reasoning_budget
 
     def _token_limit(self) -> str:
