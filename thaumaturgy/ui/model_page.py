@@ -45,8 +45,10 @@ VRAM_HELP = (
 PRESETS = store.BUILTIN_PRESETS
 CUSTOM = store.CUSTOM
 DEFAULT_PRESET = store.DEFAULT_PRESET
-RUNTIME_PROFILES = store.BUILTIN_RUNTIME_PROFILES
-DEFAULT_RUNTIME_PROFILE = store.DEFAULT_RUNTIME_PROFILE
+RUNTIME_TEMPLATES = store.BUILTIN_RUNTIME_TEMPLATES
+DEFAULT_RUNTIME_TEMPLATE = store.DEFAULT_RUNTIME_TEMPLATE
+# Slider ceiling when the model's block count can't be read.
+FALLBACK_MAX_GPU_LAYERS = 100
 
 # (key, label, min, max, step, decimals)
 PARAMS = [
@@ -100,13 +102,22 @@ def _runtime_load_args(vals: dict) -> tuple[int, int, str, str, str, int]:
             reasoning_budget, budget_message)
 
 
-def _runtime_gpu_label(vals: dict) -> str:
+def _gpu_layer_ceiling(model_name: str | None) -> int:
+    """The model's offloadable layer count, or a ceiling to slide against."""
+    blocks = engine.max_gpu_layers(model_name) if model_name else None
+    return blocks or FALLBACK_MAX_GPU_LAYERS
+
+
+def _runtime_gpu_label(vals: dict, model_name: str | None = None) -> str:
     gpu = int(vals.get("gpu_layers", -1))
     if gpu < 0:
         return "auto"
     if gpu == 0:
         return "CPU only"
-    return f"{gpu} layers"
+    blocks = engine.max_gpu_layers(model_name) if model_name else None
+    if blocks and gpu >= blocks:
+        return f"{blocks} layers (all)"
+    return f"{gpu} layers" + (f" of {blocks}" if blocks else "")
 
 
 def _runtime_status_label(selected: str | None) -> str:
@@ -179,20 +190,25 @@ def _model_card(bridge):
             ui.label("Model").classes("text-lg font-semibold")
             ui.badge("llama.cpp").props("color=secondary").classes("font-mono")
 
-        with ui.row().classes("w-full items-center gap-2 no-wrap"):
-            if models:
-                model = ui.select(options=models, value=appstate.state.current_model
-                                  if appstate.state.current_model in models else models[0]) \
-                    .classes("tg-field").props("filled").style("flex:1;min-width:0")
-            else:
-                model = ui.select(options=["(no models found)"], value="(no models found)") \
-                    .classes("tg-field").props("filled").style("flex:1;min-width:0")
-                model.disable()
-            delete_btn = ui.button(icon="delete") \
-                .props("flat dense color=negative").tooltip("Delete this model from disk")
-        if not models:
-            ui.label(f"Put .gguf files in {engine.models_dir()}").classes("text-xs text-muted")
-            delete_btn.disable()
+        # Filled in stages: the load buttons need the download dialog, which is
+        # defined further down.
+        runtime_box = ui.column().classes("tg-pset-box w-full gap-2")
+        with runtime_box:
+            ui.label("Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
+            with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                if models:
+                    model = ui.select(options=models, value=appstate.state.current_model
+                                      if appstate.state.current_model in models else models[0]) \
+                        .classes("tg-field").props("filled").style("flex:1;min-width:0")
+                else:
+                    model = ui.select(options=["(no models found)"], value="(no models found)") \
+                        .classes("tg-field").props("filled").style("flex:1;min-width:0")
+                    model.disable()
+                delete_btn = ui.button(icon="delete") \
+                    .props("flat dense color=negative").tooltip("Delete this model from disk")
+            if not models:
+                ui.label(f"Put .gguf files in {engine.models_dir()}").classes("text-xs text-muted")
+                delete_btn.disable()
         bridge["model_select"] = model
 
         # ── Delete-model confirmation ────────────────────────────────────────
@@ -223,6 +239,10 @@ def _model_card(bridge):
                 model.disable()
                 delete_btn.disable()
                 appstate.state.current_model = None
+                # select_model_defaults early-returns on the placeholder, so the
+                # editor would still be bound to the model just deleted.
+                bridge["refresh_runtime_owner"]()
+                bridge["refresh_details"]()
             refresh_status()
             refresh_preview()
 
@@ -420,16 +440,22 @@ def _model_card(bridge):
         dl_go.on_click(lambda: run_job(hf_download.convert,
                                        (dl_url.value or "").strip(), dl_quant.value))
 
-        with ui.row().classes("w-full gap-2 mb-4"):
-            load_btn = ui.button("Load model", icon="play_arrow") \
-                .props("color=positive unelevated")
-            ui.button("Unload", icon="stop",
-                      on_click=lambda: (engine.server.stop(), refresh_status(), refresh_preview())) \
-                .props("color=negative unelevated")
-            ui.button("Download New Model", icon="download", on_click=dl_dialog.open) \
-                .props("color=primary unelevated")
+        with runtime_box:
+            with ui.row().classes("w-full gap-2"):
+                load_btn = ui.button("Load model", icon="play_arrow") \
+                    .props("color=positive unelevated")
+                ui.button("Unload", icon="stop",
+                          on_click=lambda: (engine.server.stop(), refresh_status(),
+                                            refresh_preview())) \
+                    .props("color=negative unelevated")
+                ui.button("Download New Model", icon="download", on_click=dl_dialog.open) \
+                    .props("color=primary unelevated")
 
-        status = ui.label().classes("text-sm")
+            status = ui.label().classes("text-sm")
+            runtime_owner = ui.label().classes("text-sm font-mono break-all")
+            ui.button("Edit runtime settings", icon="edit",
+                      on_click=lambda: bridge["enter_runtime_edit"]()) \
+                .props("color=primary unelevated").classes("w-full")
 
         with ui.column().classes("tg-pset-box w-full gap-2"):
             ui.label("Parameter Set").classes("text-xs text-muted uppercase tracking-wide")
@@ -449,23 +475,12 @@ def _model_card(bridge):
             lambda e: bridge["apply_param"](e.value) if "apply_param" in bridge else None)
         bridge["param_select"] = param_set
 
-        with ui.column().classes("tg-pset-box w-full gap-2"):
-            ui.label("Runtime Profile").classes("text-xs text-muted uppercase tracking-wide")
-            runtime_profile = ui.select(options=bridge["runtime_options"](),
-                                        value=bridge.get("start_runtime", DEFAULT_RUNTIME_PROFILE)) \
-                .props("filled").classes("w-full tg-field")
-            with ui.row().classes("w-full gap-2 no-wrap"):
-                ui.button("Use model default", icon="restart_alt",
-                          on_click=lambda: bridge["use_runtime_default"]()) \
-                    .props("color=primary unelevated").classes("flex-1")
-                ui.button("Make default for model", icon="push_pin",
-                          on_click=lambda: bridge["make_runtime_default"]()) \
-                    .props("color=primary unelevated").classes("flex-1")
-                ui.button(icon="edit", on_click=lambda: bridge["enter_runtime_edit"]()) \
-                    .props("color=primary unelevated").tooltip("Edit runtime profiles")
-        runtime_profile.on_value_change(
-            lambda e: bridge["apply_runtime"](e.value) if "apply_runtime" in bridge else None)
-        bridge["runtime_select"] = runtime_profile
+        def refresh_runtime_owner():
+            runtime_owner.text = ("Settings are saved per model."
+                                  if bridge["current_model"]() else "Select a model.")
+
+        bridge["refresh_runtime_owner"] = refresh_runtime_owner
+        refresh_runtime_owner()
 
         with ui.column().classes("tg-pset-box w-full gap-2"):
             with ui.row().classes("w-full items-center justify-between"):
@@ -505,14 +520,6 @@ def _model_card(bridge):
                 status.text = "○ Not loaded"
                 status.classes(replace="text-sm text-muted")
 
-        pending_load: dict = {}
-        with ui.dialog() as gpu_layers_dialog, ui.card().classes("p-5 gap-3").style("width:460px;max-width:92vw"):
-            ui.label("GPU Layers Exceed Model Limit").classes("text-lg font-semibold")
-            gpu_layers_warning = ui.label().classes("text-sm leading-relaxed")
-            with ui.row().classes("w-full justify-end gap-2"):
-                ui.button("Cancel", on_click=gpu_layers_dialog.close).props("flat")
-                ok_btn = ui.button("OK").props("color=warning unelevated")
-
         async def run_load(current_model: str, gpu_layers: int, ctx_size: int,
                            cache_type: str, chat_template: str, reasoning: str,
                            reasoning_budget: int, reasoning_budget_message: str):
@@ -531,12 +538,6 @@ def _model_card(bridge):
                 refresh_server_output()
                 refresh_preview()
 
-        async def confirm_gpu_layers():
-            gpu_layers_dialog.close()
-            await run_load(**pending_load)
-
-        ok_btn.on_click(confirm_gpu_layers)
-
         async def load():
             current_model = bridge["current_model"]()
             if not current_model:
@@ -545,25 +546,10 @@ def _model_card(bridge):
             (gpu_layers, ctx_size, cache_type, chat_template, reasoning,
              reasoning_budget, budget_message) = (
                 _runtime_load_args(bridge["active_runtime"]()))
+            # Backstop for hand-edited YAML; the slider can't exceed this.
             max_layers = engine.max_gpu_layers(current_model)
-            if max_layers is not None and gpu_layers > max_layers:
-                pending_load.clear()
-                pending_load.update({
-                    "current_model": current_model,
-                    "gpu_layers": gpu_layers,
-                    "ctx_size": ctx_size,
-                    "cache_type": cache_type,
-                    "chat_template": chat_template,
-                    "reasoning": reasoning,
-                    "reasoning_budget": reasoning_budget,
-                    "reasoning_budget_message": budget_message,
-                })
-                gpu_layers_warning.text = (
-                    f"The selected runtime profile requests {gpu_layers} GPU layers, "
-                    f"but {current_model} reports a maximum of {max_layers}. "
-                    "Loading may fail or behave unexpectedly. Continue?")
-                gpu_layers_dialog.open()
-                return
+            if max_layers is not None:
+                gpu_layers = min(gpu_layers, max_layers)
             await run_load(current_model, gpu_layers, ctx_size, cache_type,
                            chat_template, reasoning, reasoning_budget, budget_message)
 
@@ -587,10 +573,10 @@ def render():
     order: list = doc["order"]
     model_defaults: dict = doc["model_defaults"]
 
-    runtime_doc = store.load_runtime_profiles()
-    runtime_sets: dict = runtime_doc["sets"]
+    runtime_doc = store.load_runtime_settings()
+    runtime_templates: dict = runtime_doc["templates"]
     runtime_order: list = runtime_doc["order"]
-    runtime_model_defaults: dict = runtime_doc["model_defaults"]
+    runtime_models: dict = runtime_doc["models"]
 
     def param_default_for_model(model_name: str | None) -> str:
         """The model's pinned parameter set, else the global default."""
@@ -599,36 +585,27 @@ def render():
             return pinned
         return DEFAULT_PRESET if DEFAULT_PRESET in sets else order[0]
 
-    def runtime_default_for_model(model_name: str | None) -> str:
-        """The model's pinned runtime profile, else the global default."""
-        pinned = runtime_model_defaults.get(model_name)
-        if pinned in runtime_sets:
-            return pinned
-        return (DEFAULT_RUNTIME_PROFILE if DEFAULT_RUNTIME_PROFILE in runtime_sets
-                else runtime_order[0])
-
     start = param_default_for_model(None)
-    runtime_start = runtime_default_for_model(None)
 
     state = {
         "mode": "view",
         "active": start,
         "editing": start,
-        "runtime_active": runtime_start,
-        "runtime_editing": runtime_start,
+        # Highlighted in the edit-mode list only; templates are copied onto a
+        # model, never bound to it.
+        "template": runtime_order[0] if runtime_order else DEFAULT_RUNTIME_TEMPLATE,
     }
 
     bridge["start_pset"] = start
-    bridge["start_runtime"] = runtime_start
 
     def persist_params():
         store.save_presets({"sets": sets, "order": order, "model_defaults": model_defaults})
 
     def persist_runtime():
-        store.save_runtime_profiles({
-            "sets": runtime_sets,
+        store.save_runtime_settings({
+            "templates": runtime_templates,
             "order": runtime_order,
-            "model_defaults": runtime_model_defaults,
+            "models": runtime_models,
         })
 
     def current_model():
@@ -639,23 +616,18 @@ def render():
     def param_values(name: str) -> dict:
         return sets.get(name, PRESETS[DEFAULT_PRESET])
 
-    def runtime_values(name: str) -> dict:
-        vals = dict(runtime_sets.get(name, RUNTIME_PROFILES[DEFAULT_RUNTIME_PROFILE]))
-        vals["gpu_layers"] = int(vals.get("gpu_layers", -1))
-        vals["context_size"] = int(vals.get("context_size", 0))
-        if vals.get("cache_type") not in CACHE_TYPES:
-            vals["cache_type"] = "fp16"
-        if vals.get("chat_template") not in CHAT_TEMPLATES:
-            vals["chat_template"] = "auto"
-        if vals.get("reasoning") not in REASONING_MODES:
-            vals["reasoning"] = "auto"
-        vals["reasoning_budget"] = int(vals.get("reasoning_budget", -1))
-        vals["reasoning_budget_message"] = str(
-            vals.get("reasoning_budget_message", store.DEFAULT_REASONING_BUDGET_MESSAGE))
-        return vals
+    def model_runtime(model_name: str | None) -> dict:
+        """The model's saved load settings, or the default template's values.
+
+        Read-only: an entry is stored only when something writes one, so merely
+        browsing the model dropdown doesn't grow the file.
+        """
+        if model_name and model_name in runtime_models:
+            return runtime_models[model_name]
+        return store.normalize_runtime(runtime_templates.get(DEFAULT_RUNTIME_TEMPLATE))
 
     def active_runtime():
-        return runtime_values(state["runtime_active"])
+        return model_runtime(current_model())
 
     def sync_active_params():
         appstate.state.current_params = dict(param_values(state["active"]))
@@ -664,9 +636,8 @@ def render():
         sel = bridge.get("param_select")
         if sel is not None:
             sel.set_options(pset_options(), value=state["active"])
-        rsel = bridge.get("runtime_select")
-        if rsel is not None:
-            rsel.set_options(runtime_options(), value=state["runtime_active"])
+        if "refresh_runtime_owner" in bridge:
+            bridge["refresh_runtime_owner"]()
 
     def refresh_preview():
         if state["mode"] == "view":
@@ -679,17 +650,16 @@ def render():
         if not model_name or model_name.startswith("("):
             return
         state["active"] = param_default_for_model(model_name)
-        state["runtime_active"] = runtime_default_for_model(model_name)
         if state["mode"] == "param_edit":
             state["editing"] = state["active"]
-        elif state["mode"] == "runtime_edit":
-            state["runtime_editing"] = state["runtime_active"]
         bridge["start_pset"] = state["active"]
-        bridge["start_runtime"] = state["runtime_active"]
         sync_active_params()
         if update_selectors:
             refresh_selectors()
             refresh_preview()
+        if state["mode"] == "runtime_edit":
+            # The panel edits whichever model is selected.
+            details_panel.refresh()
 
     bridge["select_model_defaults"] = select_model_defaults
 
@@ -697,21 +667,11 @@ def render():
         d = model_defaults.get(current_model())
         return {n: (f"{n} *" if n == d else n) for n in order}
 
-    def runtime_options():
-        d = runtime_model_defaults.get(current_model())
-        return {n: (f"{n} *" if n == d else n) for n in runtime_order}
-
     def apply_param_view(name: str):
         if name not in sets:
             return
         state["active"] = name
         sync_active_params()
-        refresh_preview()
-
-    def apply_runtime_view(name: str):
-        if name not in runtime_sets:
-            return
-        state["runtime_active"] = name
         refresh_preview()
 
     def make_default():
@@ -732,33 +692,28 @@ def render():
         if sel is not None:
             sel.value = d
 
-    def make_runtime_default():
-        sel = bridge.get("runtime_select")
+    def apply_template(name: str):
+        """Copy a template's values onto the selected model."""
         m = current_model()
         if not m:
-            ui.notify("Select or load a model first", type="warning")
+            ui.notify("Select a model first", type="warning")
             return
-        if sel is not None:
-            runtime_model_defaults[m] = sel.value
-            persist_runtime()
-            sel.set_options(runtime_options(), value=sel.value)
-            ui.notify(f"'{sel.value}' is now the runtime default for {m}")
-
-    def use_runtime_default():
-        sel = bridge.get("runtime_select")
-        d = runtime_default_for_model(current_model())
-        if sel is not None:
-            sel.value = d
+        if name not in runtime_templates:
+            return
+        state["template"] = name
+        runtime_models[m] = store.normalize_runtime(runtime_templates[name])
+        persist_runtime()
+        details_panel.refresh()
+        sets_panel.refresh()
+        ui.notify(f"Applied '{name}' to {m}")
 
     bridge["pset_options"] = pset_options
-    bridge["runtime_options"] = runtime_options
     bridge["apply_param"] = apply_param_view
-    bridge["apply_runtime"] = apply_runtime_view
     bridge["make_default"] = make_default
     bridge["use_default"] = use_default
-    bridge["make_runtime_default"] = make_runtime_default
-    bridge["use_runtime_default"] = use_runtime_default
     bridge["refresh_preview"] = refresh_preview
+    # Unlike refresh_preview, rebuilds in edit mode too.
+    bridge["refresh_details"] = lambda: details_panel.refresh()
 
     def enter_param_edit():
         state["mode"] = "param_edit"
@@ -769,7 +724,6 @@ def render():
 
     def enter_runtime_edit():
         state["mode"] = "runtime_edit"
-        state["runtime_editing"] = state["runtime_active"]
         strip.classes(add="tg-edit")
         details_panel.refresh()
         sets_panel.refresh()
@@ -784,8 +738,6 @@ def render():
             sync_active_params()
             persist_params()
         elif state["mode"] == "runtime_edit":
-            if state["runtime_editing"] in runtime_sets:
-                state["runtime_active"] = state["runtime_editing"]
             persist_runtime()
         state["mode"] = "view"
         strip.classes(remove="tg-edit")
@@ -797,9 +749,8 @@ def render():
         details_panel.refresh()
         sets_panel.refresh()
 
-    def select_runtime(name: str):
-        state["runtime_editing"] = name
-        details_panel.refresh()
+    def select_template(name: str):
+        state["template"] = name
         sets_panel.refresh()
 
     def new_set():
@@ -812,15 +763,31 @@ def render():
         persist_params()
         select_set(name)
 
-    def new_runtime():
-        i = 1
-        while f"Profile {i}" in runtime_sets:
-            i += 1
-        name = f"Profile {i}"
-        runtime_sets[name] = dict(RUNTIME_PROFILES[DEFAULT_RUNTIME_PROFILE])
-        runtime_order.append(name)
+    def save_as_template(name: str):
+        """Save the selected model's current settings under a template name.
+
+        Reusing a name overwrites it; that is also how a template is updated.
+        """
+        m = current_model()
+        name = (name or "").strip()
+        if not m or not name:
+            return
+        if name not in runtime_templates:
+            runtime_order.append(name)
+        runtime_templates[name] = dict(model_runtime(m))
         persist_runtime()
-        select_runtime(name)
+        select_template(name)
+        ui.notify(f"Saved {m}'s settings as '{name}'")
+
+    def ask_save_template():
+        if not current_model():
+            ui.notify("Select a model first", type="warning")
+            return
+        i = 1
+        while f"Template {i}" in runtime_templates:
+            i += 1
+        template_name.value = f"Template {i}"
+        template_dialog.open()
 
     def rename_set(new_name: str) -> bool:
         old = state["editing"]
@@ -842,26 +809,6 @@ def render():
         sets_panel.refresh()
         return True
 
-    def rename_runtime(new_name: str) -> bool:
-        old = state["runtime_editing"]
-        new_name = (new_name or "").strip()
-        if not old or not new_name or new_name == old:
-            return False
-        if new_name in runtime_sets:
-            ui.notify(f"'{new_name}' already exists", type="negative")
-            return False
-        runtime_sets[new_name] = runtime_sets.pop(old)
-        runtime_order[runtime_order.index(old)] = new_name
-        if state["runtime_active"] == old:
-            state["runtime_active"] = new_name
-        for m, s in list(runtime_model_defaults.items()):
-            if s == old:
-                runtime_model_defaults[m] = new_name
-        state["runtime_editing"] = new_name
-        persist_runtime()
-        sets_panel.refresh()
-        return True
-
     def delete_set():
         name = state["editing"]
         if len(order) <= 1:
@@ -880,22 +827,29 @@ def render():
             details_panel.refresh()
             sets_panel.refresh()
 
-    def delete_runtime():
-        name = state["runtime_editing"]
+    def delete_template():
+        name = state["template"]
         if len(runtime_order) <= 1:
-            ui.notify("Keep at least one runtime profile", type="warning")
+            ui.notify("Keep at least one template", type="warning")
             return
-        if name in runtime_sets:
-            del runtime_sets[name]
+        if name in runtime_templates:
+            del runtime_templates[name]
             runtime_order.remove(name)
-            for m in [m for m, s in runtime_model_defaults.items() if s == name]:
-                del runtime_model_defaults[m]
-            state["runtime_editing"] = runtime_order[0]
-            if state["runtime_active"] == name:
-                state["runtime_active"] = state["runtime_editing"]
+            state["template"] = runtime_order[0]
             persist_runtime()
-            details_panel.refresh()
             sets_panel.refresh()
+
+    with ui.dialog() as template_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:420px;max-width:92vw"):
+        ui.label("Save as template").classes("text-lg font-semibold")
+        template_name = ui.input(label="Template name").classes("w-full tg-field").props("filled")
+        ui.label("An existing name is overwritten.").classes("text-xs text-muted")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=template_dialog.close).props("flat")
+            ui.button("Save", icon="save",
+                      on_click=lambda: (template_dialog.close(),
+                                        save_as_template(template_name.value))) \
+                .props("color=positive unelevated")
 
     with ui.dialog() as confirm_dialog, ui.card().classes("p-5 gap-3"):
         confirm_label = ui.label().classes("text-sm")
@@ -903,14 +857,16 @@ def render():
             ui.button("Cancel", on_click=confirm_dialog.close).props("flat")
             ui.button("Delete", icon="delete",
                       on_click=lambda: (confirm_dialog.close(),
-                                        delete_runtime() if state["mode"] == "runtime_edit"
+                                        delete_template() if state["mode"] == "runtime_edit"
                                         else delete_set())) \
                 .props("color=negative unelevated")
 
     def ask_delete():
-        if state["mode"] == "runtime_edit" and state["runtime_editing"]:
+        # Branch on mode alone, as the Delete button does, or the prompt can
+        # name one thing while the button deletes another.
+        if state["mode"] == "runtime_edit":
             confirm_label.text = (
-                f"Delete runtime profile “{state['runtime_editing']}”? This can't be undone.")
+                f"Delete template “{state['template']}”? This can't be undone.")
             confirm_dialog.open()
         elif state["editing"]:
             confirm_label.text = (
@@ -918,8 +874,8 @@ def render():
             confirm_dialog.open()
 
     def estimate_vram(vals: dict | None = None) -> float | str:
-        """Rough VRAM estimate, or a word saying why there isn't one — a
-        "~ 0.0 GB" built from missing inputs reads as an answer."""
+        """Rough VRAM estimate, or a word saying why there isn't one; a
+        "~ 0.0 GB" built from missing inputs would read as an answer."""
         model = current_model()
         if not model:
             return "no model"
@@ -931,7 +887,7 @@ def render():
         size_gb = _file_size_gb(model)
         if not size_gb:
             return "unknown"
-        frac = min(1.0, gpu_layers / 100)
+        frac = min(1.0, gpu_layers / _gpu_layer_ceiling(model))
         weights = size_gb * frac
         per = {"fp16": 2.0, "q8_0": 1.0, "q4_0": 0.5}[runtime.get("cache_type", "fp16")]
         kv_gb = ctx_size * 48 * per * 128 / 1e9
@@ -973,8 +929,7 @@ def render():
                 ui.separator()
                 with ui.column().classes("w-full gap-2"):
                     ui.label("Runtime").classes("text-xs text-muted uppercase tracking-wide")
-                    summary_row("Profile", state["runtime_active"])
-                    summary_row("GPU layers", _runtime_gpu_label(runtime))
+                    summary_row("GPU layers", _runtime_gpu_label(runtime, model_name))
                     summary_row("Context size", _runtime_context_label(runtime))
                     summary_row("KV cache type", runtime.get("cache_type", "fp16"))
                     summary_row("Chat template", _runtime_chat_template_label(runtime))
@@ -1033,24 +988,28 @@ def render():
                     .props("color=positive unelevated").classes("mt-1")
                 return
 
-            vals = runtime_values(state["runtime_editing"])
-            ui.label("Editing Runtime Profile").classes("text-xs text-muted uppercase tracking-wide")
-            name_input = ui.input(value=state["runtime_editing"] or "") \
-                .props('filled dense input-style="font-size:1.4rem;font-weight:600"') \
-                .classes("w-full tg-field")
-
-            def commit_runtime_rename():
-                if not rename_runtime(name_input.value):
-                    name_input.value = state["runtime_editing"] or ""
-
-            name_input.on("blur", commit_runtime_rename)
-            name_input.on("keydown.enter", commit_runtime_rename)
+            edited_model = current_model()
+            ui.label("Editing Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
+            if not edited_model:
+                ui.label("Select a model to edit its runtime settings.") \
+                    .classes("text-sm text-muted")
+                return
+            vals = model_runtime(edited_model)
+            ui.label(edited_model).classes("text-lg font-semibold break-all")
 
             controls = {}
-            controls["gpu_layers"] = _slider_row("GPU layers", -1, 100, 1,
+            blocks = engine.max_gpu_layers(edited_model)
+            # Never clamp the stored value to the fallback ceiling: a transient
+            # metadata failure would truncate a legitimate setting to 100.
+            ceiling = max(blocks or FALLBACK_MAX_GPU_LAYERS,
+                          int(vals.get("gpu_layers", -1)))
+            controls["gpu_layers"] = _slider_row("GPU layers", -1, ceiling, 1,
                                                  vals.get("gpu_layers", -1), 0)
-            ui.label("-1 = auto. 0 = CPU only. Higher values offload that many layers.") \
-                .classes("text-xs text-muted")
+            ui.label(
+                f"-1 = auto (llama.cpp fits what VRAM allows). 0 = CPU only. "
+                + (f"{blocks} = every layer of this model."
+                   if blocks else "The model's layer count couldn't be read.")
+            ).classes("text-xs text-muted leading-snug")
             controls["context_size"] = ui.number(label="Context size",
                                                  value=vals.get("context_size", 0),
                                                  min=0, step=1024) \
@@ -1094,26 +1053,29 @@ def render():
                 .classes("text-xs text-muted leading-snug")
 
             def save_runtime_edit(_=None):
+                # This closure holds the model the panel was built for; a
+                # control can still fire after the selection moved on.
+                if current_model() != edited_model:
+                    return
                 budget = controls["reasoning_budget"].value
-                runtime_sets[state["runtime_editing"]] = {
-                    "gpu_layers": int(controls["gpu_layers"].value),
-                    "context_size": int(controls["context_size"].value or 0),
+                runtime_models[edited_model] = store.normalize_runtime({
+                    "gpu_layers": controls["gpu_layers"].value,
+                    "context_size": controls["context_size"].value or 0,
                     "cache_type": controls["cache_type"].value,
                     "chat_template": controls["chat_template"].value,
                     "reasoning": controls["reasoning"].value,
-                    "reasoning_budget": int(budget if budget is not None else -1),
+                    "reasoning_budget": budget if budget is not None else -1,
                     "reasoning_budget_message":
                         (controls["reasoning_budget_message"].value or "").strip(),
-                }
+                })
                 persist_runtime()
 
             for control in controls.values():
                 control.on_value_change(save_runtime_edit)
-            save_runtime_edit()
 
             ui.button("Save", icon="save",
                       on_click=lambda: (persist_runtime(),
-                                        ui.notify(f"Saved '{state['runtime_editing']}'",
+                                        ui.notify(f"Saved settings for {edited_model}",
                                                   type="positive"))) \
                 .props("color=positive unelevated").classes("mt-1")
 
@@ -1127,9 +1089,9 @@ def render():
         with ui.list().classes("w-full"):
             if state["mode"] == "runtime_edit":
                 for name in runtime_order:
-                    item = ui.item(on_click=lambda n=name: select_runtime(n)) \
+                    item = ui.item(on_click=lambda n=name: apply_template(n)) \
                         .classes("tg-nav-item w-full")
-                    if name == state["runtime_editing"]:
+                    if name == state["template"]:
                         item.classes("tg-active")
                     with item:
                         with ui.item_section().props("avatar"):
@@ -1152,12 +1114,16 @@ def render():
         with ui.card().classes("w-full h-full p-4 gap-2 overflow-hidden flex flex-col"):
             runtime_mode = state["mode"] == "runtime_edit"
             with ui.row().classes("w-full items-center justify-between"):
-                ui.label("Runtime profiles" if runtime_mode else "Parameter sets") \
+                ui.label("Templates" if runtime_mode else "Parameter sets") \
                     .classes("text-lg font-semibold")
                 ui.button(icon="close", on_click=exit_edit).props("flat round dense") \
                     .tooltip("Done editing")
+            if runtime_mode:
+                ui.label("Click a template to copy it onto the selected model.") \
+                    .classes("text-xs text-muted leading-snug")
             with ui.row().classes("w-full gap-2 no-wrap"):
-                ui.button("New", icon="add", on_click=new_runtime if runtime_mode else new_set) \
+                ui.button("Save as template" if runtime_mode else "New", icon="add",
+                          on_click=ask_save_template if runtime_mode else new_set) \
                     .props("color=positive unelevated").classes("flex-1")
                 ui.button(icon="delete", on_click=ask_delete) \
                     .props("color=negative unelevated").tooltip("Delete selected")

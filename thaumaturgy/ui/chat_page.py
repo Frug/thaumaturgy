@@ -44,12 +44,16 @@ def _avatar(m: dict):
         ui.label((m.get("name") or "?")[0].upper())
 
 
-def _finish_warning(reason: str | None) -> str | None:
+def _finish_warning(reason: str | None, limit: str = "max_new_tokens") -> str | None:
     if not reason or reason == "stop":
         return None
     if reason == "error":
         return "Generation failed before the model finished replying."
     if reason == "length":
+        if limit == "context":
+            return ("Generation stopped because the context window filled up. "
+                    "Max new tokens doesn't apply while the reasoning budget "
+                    "is unrestricted.")
         return "Generation stopped because Max new tokens was reached."
     return f"Generation finished with reason: {reason}."
 
@@ -57,7 +61,8 @@ def _finish_warning(reason: str | None) -> str | None:
 def _message_warning(m: dict) -> str | None:
     if m.get("generation_error"):
         return f"Generation failed: {m['generation_error']}"
-    return _finish_warning(m.get("finish_reason"))
+    return _finish_warning(m.get("finish_reason"),
+                           m.get("finish_limit", "max_new_tokens"))
 
 
 def _join_blocks(parts: list[str]) -> str:
@@ -191,6 +196,7 @@ def _start_generation(chat: dict, api: list[dict], assistant: dict, params: dict
                 kind = event.get("type")
                 if kind == "finish":
                     assistant["finish_reason"] = event.get("reason")
+                    assistant["finish_limit"] = event.get("limit", "max_new_tokens")
                     continue
                 delta = event.get("text", "")
                 if not delta:
@@ -563,6 +569,7 @@ def render():
         message = chat["messages"][index]
         message["text"] = text
         message.pop("finish_reason", None)
+        message.pop("finish_limit", None)
         message.pop("generation_error", None)
         message.pop("reasoning", None)
         store.save_chat(chat)

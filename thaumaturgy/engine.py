@@ -134,7 +134,7 @@ def _drop_cached(name: str) -> None:
 
 
 def _read_metadata(cache: dict, model_name: str, read) -> int | None:
-    """Cache a GGUF metadata read; failures aren't cached, so a still-copying
+    """Cache a GGUF metadata read. Failures aren't cached, so a still-copying
     download isn't pinned to None for the life of the process."""
     path = models_dir() / model_name
     try:
@@ -177,7 +177,9 @@ class LlamaServer:
         self.model: str | None = None
         self.n_ctx: int | None = None  # trained/effective context, learned after load
         self.chat_template_caps: dict = {}
+        self.reasoning: str = "auto"  # thinking mode the server was launched with
         self.reasoning_budget: int = -1  # thinking cap the server was launched with
+        self.requested_ctx: int = 0  # the -c value; 0 means "let llama.cpp choose"
         self._log_lines: deque[str] = deque(maxlen=SERVER_LOG_LIMIT)
         self._log_lock = threading.Lock()
         self._log_thread: threading.Thread | None = None
@@ -246,7 +248,9 @@ class LlamaServer:
         # message gives the model a cue to wrap up. Pointless with no budget.
         if reasoning_budget > 0 and reasoning_budget_message:
             cmd += ["--reasoning-budget-message", reasoning_budget_message]
+        self.reasoning = reasoning
         self.reasoning_budget = reasoning_budget
+        self.requested_ctx = ctx_size
         self._clear_output()
         self._append_output("$ " + " ".join(shlex.quote(str(part)) for part in cmd))
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -269,6 +273,9 @@ class LlamaServer:
         deadline = time.time() + timeout
         while time.time() < deadline:
             if not self.running:
+                # Clear the handles too, or the page reports the dead process's
+                # model and settings as though they were live.
+                self.stop()
                 raise RuntimeError("llama-server exited during startup")
             try:
                 if requests.get(f"{self.base_url}/health", timeout=2).status_code == 200:
@@ -280,13 +287,21 @@ class LlamaServer:
         raise RuntimeError("llama-server did not become ready in time")
 
     def _read_props(self) -> None:
+        """Learn the effective context and template capabilities from /props.
+
+        Never raises: it runs after the server is up, so an escape would report
+        a failed load for a server that is serving.
+        """
         try:
             props = requests.get(f"{self.base_url}/props", timeout=10).json()
-            self.n_ctx = (props.get("default_generation_settings", {}).get("n_ctx")
-                          or props.get("n_ctx"))
-            caps = props.get("chat_template_caps") or {}
+            if not isinstance(props, dict):
+                props = {}
+            gen = props.get("default_generation_settings")
+            gen = gen if isinstance(gen, dict) else {}
+            self.n_ctx = gen.get("n_ctx") or props.get("n_ctx")
+            caps = props.get("chat_template_caps")
             self.chat_template_caps = caps if isinstance(caps, dict) else {}
-        except (requests.RequestException, ValueError):
+        except Exception:  # noqa: BLE001 - a bad /props must not fail the load
             self.n_ctx = None
             self.chat_template_caps = {}
 
@@ -330,7 +345,9 @@ class LlamaServer:
         self.model = None
         self.n_ctx = None
         self.chat_template_caps = {}
+        self.reasoning = "auto"
         self.reasoning_budget = -1
+        self.requested_ctx = 0
         _pidfile().unlink(missing_ok=True)
 
     @staticmethod
@@ -430,15 +447,52 @@ class LlamaServer:
 
         return self._estimate_tokens(prompt), False
 
-    def _max_tokens(self, max_new_tokens: int) -> int:
-        """Grow the request cap to cover thinking as well as the reply.
+    def thinking_enabled(self) -> bool:
+        """Whether the loaded model is expected to emit reasoning."""
+        if self.reasoning == "off":
+            return False
+        if self.reasoning == "on":
+            return True
+        # auto: llama.cpp decides from the template, so ask what it parsed.
+        # Retry when a /props failure at load left no caps, rather than reading
+        # "auto" as "no thinking" for the life of the server.
+        if not self.chat_template_caps and self.running:
+            self._read_props()
+        return self.chat_template_caps.get("supports_preserve_reasoning") is True
 
-        max_tokens caps thinking and reply together, so a bare max_new_tokens
-        lets a long thought eat the whole allowance and leave nothing to answer
-        with. A thinking model needs the sum. With no budget set (-1) there is
-        no bound to add, and a long enough thought can still exhaust the cap.
+    def _context_limit(self) -> int | None:
+        """Best estimate of the loaded server's context window.
+
+        Prefer /props n_ctx, but that read can fail silently after load, so fall
+        back to the launched -c value and then the model's trained context —
+        anything to avoid an unbounded generation with no stop button.
         """
-        return max_new_tokens + max(0, self.reasoning_budget)
+        if self.n_ctx:
+            return self.n_ctx
+        if self.requested_ctx > 0:
+            return self.requested_ctx
+        return trained_ctx(self.model) if self.model else None
+
+    def _max_tokens(self, max_new_tokens: int) -> int | None:
+        """The request's token cap, or None if there is nothing to cap with.
+
+        max_tokens bounds thinking and reply together, but the setting means
+        reply tokens, so the thinking budget is added to keep the reply's
+        allowance whole. An unrestricted budget has no such total, leaving the
+        context window as the only bound — sent explicitly, since omitting the
+        field gives a runaway generation no stop button.
+        """
+        if not self.thinking_enabled():
+            return max_new_tokens
+        if self.reasoning_budget < 0:
+            return self._context_limit()
+        return max_new_tokens + self.reasoning_budget
+
+    def _token_limit(self) -> str:
+        """Which setting a "length" finish should be blamed on."""
+        if self.thinking_enabled() and self.reasoning_budget < 0:
+            return "context"
+        return "max_new_tokens"
 
     def stream_chat(self, messages: list[dict], params: dict | None = None):
         """Yield streaming chat events from /v1/chat/completions (SSE).
@@ -456,8 +510,10 @@ class LlamaServer:
             "top_k": int(p.get("top_k", 40)),
             "min_p": p.get("min_p", 0.05),
             "repeat_penalty": p.get("repetition_penalty", 1.1),
-            "max_tokens": self._max_tokens(int(p.get("max_new_tokens", 512))),
         }
+        max_tokens = self._max_tokens(int(p.get("max_new_tokens", 512)))
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         finish_reason = None
         with requests.post(f"{self.base_url}/v1/chat/completions",
                            json=body, stream=True, timeout=600) as r:
@@ -488,7 +544,8 @@ class LlamaServer:
                 if content:
                     yield {"type": "delta", "text": content}
         if finish_reason:
-            yield {"type": "finish", "reason": finish_reason}
+            yield {"type": "finish", "reason": finish_reason,
+                   "limit": self._token_limit()}
 
 
 _reap_stale()  # clean up a llama-server orphaned by a previous (reloaded) instance
