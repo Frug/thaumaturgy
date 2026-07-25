@@ -138,6 +138,70 @@ def delete_chat(chat_id: str) -> None:
         p.unlink(missing_ok=True)
 
 
+# ── Editing jobs (one JSON file each under <data>/editing/) ─────────────────
+# A job holds the source document, the span decisions made so far, and the
+# settings the run was started with. Saved after every decision so a long run
+# survives a restart.
+
+def editing_dir():
+    return sub_dir("editing")
+
+
+def _job_path(job_id: str) -> Path:
+    return editing_dir() / f"{job_id}.json"
+
+
+def new_job(title: str, source_text: str, system_prompt: str,
+            model: str | None, settings: dict) -> dict:
+    now = time.time()
+    job_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    while _job_path(job_id).exists():
+        now += 1
+        job_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    job = {
+        "id": job_id,
+        "title": title or "Untitled document",
+        "created": now,
+        "updated": now,
+        "model": model,
+        "system_prompt": system_prompt,
+        "settings": dict(settings),
+        "source_text": source_text,
+        "spans": [],
+    }
+    save_job(job)
+    return job
+
+
+def save_job(job: dict) -> None:
+    job["updated"] = time.time()
+    _write_atomic(_job_path(job["id"]),
+                  json.dumps(job, indent=2, ensure_ascii=False))
+
+
+def load_job(job_id: str) -> dict | None:
+    p = _job_path(job_id)
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def list_jobs() -> list[dict]:
+    out = []
+    for p in sorted(editing_dir().glob("*.json")):
+        try:
+            out.append(json.loads(p.read_text(encoding="utf-8")))
+        except (ValueError, OSError):
+            continue
+    out.sort(key=lambda j: j.get("updated", 0), reverse=True)
+    return out
+
+
+def delete_job(job_id: str) -> None:
+    _job_path(job_id).unlink(missing_ok=True)
+
+
 # ── App config ──────────────────────────────────────────────────────────────
 
 def load_app_config() -> dict:

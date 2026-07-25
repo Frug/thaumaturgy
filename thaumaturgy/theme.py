@@ -103,6 +103,23 @@ _HEAD_HTML = """
     border-radius: 0;
   }
 
+  /* Side-by-side span panes on the Editing page. Fixed height so the original
+     and the rewrite stay aligned as the rewrite streams in. */
+  .tg-span-box {
+    border-radius: 8px;
+    background: rgba(52, 97, 140, 0.06);
+    height: 320px;
+    overflow: auto;
+  }
+  .body--dark .tg-span-box { background: rgba(52, 97, 140, 0.16); }
+  .tg-span-box pre {
+    margin: 0;
+    padding: 10px 12px;
+    background: none !important;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
   /* Soft, rounded cards with diffuse shadows */
   .q-card {
     border-radius: var(--tg-radius);

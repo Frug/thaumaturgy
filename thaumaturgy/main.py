@@ -7,7 +7,8 @@ from contextlib import contextmanager
 from nicegui import ui
 
 from thaumaturgy import theme
-from thaumaturgy.ui import chat_page, model_page, nav, scenarios_page, settings_page
+from thaumaturgy.ui import (chat_page, editing_page, model_page, nav,
+                            scenarios_page, settings_page)
 
 ui.add_head_html(theme.head_html(), shared=True)
 
@@ -41,6 +42,11 @@ def page_chat():
 @layout_page("/scenarios")
 def page_scenarios():
     scenarios_page.render()
+
+
+@layout_page("/editing")
+def page_editing():
+    editing_page.render()
 
 
 @layout_page("/model")

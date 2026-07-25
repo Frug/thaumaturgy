@@ -447,6 +447,27 @@ class LlamaServer:
 
         return self._estimate_tokens(prompt), False
 
+    def count_tokens(self, text: str) -> tuple[int, bool]:
+        """Token count for raw text, with exactness flag.
+
+        Unlike count_chat_tokens this skips the chat template: the editor sizes
+        document spans, which are stretches of prose rather than messages.
+        """
+        if not text:
+            return 0, True
+        if self.running:
+            for payload in ({"content": text, "add_special": False},
+                            {"content": text}):
+                try:
+                    r = requests.post(f"{self.base_url}/tokenize", json=payload, timeout=10)
+                    r.raise_for_status()
+                    count = self._token_count_from_json(r.json())
+                    if count is not None:
+                        return count, True
+                except (requests.RequestException, ValueError, TypeError):
+                    pass
+        return self._estimate_tokens(text), False
+
     def thinking_enabled(self) -> bool:
         """Whether the loaded model is expected to emit reasoning."""
         if self.reasoning == "off":
@@ -460,7 +481,7 @@ class LlamaServer:
             self._read_props()
         return self.chat_template_caps.get("supports_preserve_reasoning") is True
 
-    def _context_limit(self) -> int | None:
+    def context_limit(self) -> int | None:
         """Best estimate of the loaded server's context window.
 
         Prefer /props n_ctx, but that read can fail silently after load, so fall
@@ -485,7 +506,7 @@ class LlamaServer:
         if not self.thinking_enabled():
             return max_new_tokens
         if self.reasoning_budget < 0:
-            return self._context_limit()
+            return self.context_limit()
         return max_new_tokens + self.reasoning_budget
 
     def _token_limit(self) -> str:
