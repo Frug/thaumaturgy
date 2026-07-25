@@ -17,7 +17,7 @@ FLAG_TEXT = {
     "length-ratio": "Length differs sharply from the original",
     "context-bleed": "Output ran past the span markers",
     "lost-break": "A paragraph break inside the span was dropped",
-    "rewritten": "Rewritten rather than corrected — few of the original words remain",
+    "invented": "Contains prose that isn't in the original",
     "error": "Generation failed",
 }
 
@@ -124,6 +124,7 @@ def render():
             "response_buffer": buffer_box.value,
             "overlap_pct": (overlap.value or 0) / 100.0,
             "auto_accept_clean": auto_accept.value,
+            "allow_deletions": allow_deletions.value,
         })
         job = editing.create(title_box.value or "Untitled document", text,
                              system_box.value or editing.DEFAULT_SYSTEM_PROMPT,
@@ -413,6 +414,10 @@ def render():
                     temperature = ui.number("Temperature", value=0.2, min=0, max=2,
                                             step=0.05).props("filled") \
                         .classes("flex-1 tg-field")
+                allow_deletions = ui.switch("Instructions may remove text") \
+                    .tooltip("Turn on when you're asking the model to strip "
+                             "content, so a shrinking span isn't treated as a "
+                             "fault. Invented prose is still flagged.")
                 auto_accept = ui.switch("Auto-accept spans that pass every check")
                 ui.button("Start editing", icon="play_arrow", on_click=create_job) \
                     .props("color=primary unelevated")

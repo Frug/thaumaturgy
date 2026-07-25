@@ -49,6 +49,7 @@ DEFAULT_SETTINGS = {
     "response_buffer": 150,   # how far under the reply cap to size a span
     "overlap_pct": 0.10,      # lookbehind/lookahead, as a fraction of the body
     "auto_accept_clean": False,
+    "allow_deletions": False,  # whether the instructions may remove text
 }
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -73,8 +74,8 @@ def normalize_settings(vals) -> dict:
             out[key] = cast(src.get(key, out[key]))
         except (TypeError, ValueError):
             pass
-    out["auto_accept_clean"] = bool(src.get("auto_accept_clean",
-                                            out["auto_accept_clean"]))
+    for key in ("auto_accept_clean", "allow_deletions"):
+        out[key] = bool(src.get(key, out[key]))
     out["overlap_pct"] = min(0.45, max(0.0, out["overlap_pct"]))
     out["response_buffer"] = max(0, min(out["response_buffer"],
                                         out["max_new_tokens"] - 64))
@@ -308,19 +309,42 @@ def build_messages(job: dict, index: int, nudge: str = "") -> list[dict]:
 
 # ── Output guards ───────────────────────────────────────────────────────────
 
-MIN_RATIO, MAX_RATIO = 0.5, 2.0
+MAX_RATIO = 2.0
+MIN_RATIO = 0.5
+# Deleting text is a legitimate instruction ("strip the scraped page furniture"),
+# and it shrinks a span on purpose. When the job allows it, only a near-total
+# gutting is worth a second look.
+MIN_RATIO_DELETING = 0.1
 _RATIO_FLOOR = 40
 _BLEED_WINDOW = 60
 
-# Below this much overlap with the original, the model has written new prose
-# rather than corrected the old. Measured: real copy edits — including heavy
-# rewordings — sit at 0.89-0.99, while an outright rewrite lands near 0.2, so
-# the threshold has wide margin on both sides.
-MIN_SIMILARITY = 0.6
+# Least share of the *output* that must trace back to the original. Measured:
+# a pure deletion scores 1.00 and a light copy edit 0.98, while prose the model
+# invented lands near 0.15 — so this separates invention from removal, which a
+# symmetric similarity cannot. Length carries the rest: a summary reuses enough
+# wording to pass here (0.79) but collapses the ratio, so MIN_RATIO catches it.
+MIN_DRAWN_FROM_SOURCE = 0.6
 
 
 def _flat(text: str) -> str:
     return " ".join(text.split())
+
+
+def drawn_from_source(original: str, text: str) -> float:
+    """Share of `text` that traces back to `original`, 0..1.
+
+    Deliberately asymmetric. A symmetric similarity punishes deletion, which is
+    a legitimate instruction — telling the model to strip scraped page furniture
+    should not look like a defect. Removing text leaves this at 1.0, because
+    every character that remains still came from the source; inventing prose
+    drives it down, because the new words match nothing.
+    """
+    a, b = _flat(original), _flat(text)
+    if not b:
+        return 1.0
+    matched = sum(block.size for block in
+                  SequenceMatcher(None, a, b).get_matching_blocks())
+    return matched / len(b)
 
 
 def reattach_edges(original: str, text: str) -> str:
@@ -372,24 +396,27 @@ def check_output(job: dict, index: int, text: str,
     if not text.strip():
         flags.append("empty")
         return flags
+    deleting = normalize_settings(job.get("settings"))["allow_deletions"]
     if SPAN_OPEN in text or SPAN_CLOSE in text:
         flags.append("markers")
     # Edges are restored mechanically, but a paragraph break *inside* a span is
     # the model's to keep. Losing one silently merges two paragraphs, so surface
     # it for review rather than forcing it back — reflowing a line can be a fair
-    # edit, and only the reviewer can tell the two apart.
-    if text.count("\n\n") < original.count("\n\n"):
+    # edit, and only the reviewer can tell the two apart. Moot once the job
+    # allows removals: taking out content takes out the blank lines around it.
+    if not deleting and text.count("\n\n") < original.count("\n\n"):
         flags.append("lost-break")
     # Catches the failure the length checks miss: a fluent replacement of about
     # the right size that keeps none of the author's words. Creative models slip
     # into this readily, especially on a short span.
-    if SequenceMatcher(None, _flat(original), _flat(text)).ratio() < MIN_SIMILARITY:
-        flags.append("rewritten")
+    if drawn_from_source(original, text) < MIN_DRAWN_FROM_SOURCE:
+        flags.append("invented")
     # Skipped on very short spans (a trailing fragment, say), where one added
     # word swings the ratio past the threshold on its own.
     if len(original) >= _RATIO_FLOOR:
+        floor = MIN_RATIO_DELETING if deleting else MIN_RATIO
         ratio = len(text) / len(original)
-        if ratio < MIN_RATIO or ratio > MAX_RATIO:
+        if ratio < floor or ratio > MAX_RATIO:
             flags.append("length-ratio")
     # Only worth testing when the rewrite actually grew: bleeding adds the
     # neighbour's text, whereas a clean rewrite stays about the original's
