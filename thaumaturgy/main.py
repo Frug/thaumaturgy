@@ -1,6 +1,7 @@
 """thaumaturgy entrypoint — application shell (header + nav drawer) and page routes."""
 
 import os
+from collections.abc import Callable
 from contextlib import contextmanager
 
 from nicegui import ui
@@ -22,28 +23,34 @@ def layout(active_route: str, pad: str = "p-2"):
         yield content
 
 
-@ui.page("/")
+def layout_page(route: str, pad: str = "p-2") -> Callable[[Callable[[], None]], None]:
+    """Register a NiceGUI page at `route`, wrapping its body in the shared layout."""
+    def decorator(render: Callable[[], None]) -> None:
+        @ui.page(route)
+        def _route() -> None:
+            with layout(route, pad=pad):
+                render()
+    return decorator
+
+
+@layout_page("/")
 def page_chat():
-    with layout("/"):
-        chat_page.render()
+    chat_page.render()
 
 
-@ui.page("/scenarios")
+@layout_page("/scenarios")
 def page_scenarios():
-    with layout("/scenarios"):
-        scenarios_page.render()
+    scenarios_page.render()
 
 
-@ui.page("/model")
+@layout_page("/model")
 def page_model():
-    with layout("/model"):
-        model_page.render()
+    model_page.render()
 
 
-@ui.page("/settings")
+@layout_page("/settings")
 def page_settings():
-    with layout("/settings"):
-        settings_page.render()
+    settings_page.render()
 
 
 def _launch(reload: bool):
@@ -63,7 +70,7 @@ def main():
 
 def cli():
     """Console-script entry (`uv run thaumaturgy`). NiceGUI's reloader can't work
-    through an installed entry point, so reload is always off here — run the
+    through an installed entry point, so reload is always off here. Run the
     module form (`uv run python -m thaumaturgy.main`) for hot reload."""
     _launch(reload=False)
 
