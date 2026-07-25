@@ -37,6 +37,43 @@ MIN_SPAN_CHARS = 40
 PROMPT_OVERHEAD = 256
 SAFETY_RESERVE = 256
 
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a careful copy editor. Fix grammar, spelling, and punctuation. "
+    "Preserve the author's voice, meaning, and paragraph structure. Do not "
+    "add, remove, or reorder content."
+)
+
+# ── Wrapper text ────────────────────────────────────────────────────────────
+# Everything below is wording this module puts around the author's passage, and
+# all of it is editable per job. Left as plain settings rather than baked in:
+# it competes with the user's own system prompt, so whoever writes that prompt
+# should be able to see this text and overrule it.
+#
+# {passage}, {before} and {after} are substituted where they appear. A template
+# with no placeholder still works — the passage is appended, and the context
+# sections are dropped. Substitution is a literal replace, so stray braces in
+# the text are harmless.
+
+DEFAULT_PASSAGE_INSTRUCTION = (
+    "Output only the corrected form of the passage below. Reproduce it in "
+    "full, with no commentary, no labels, and none of the surrounding text."
+)
+
+DEFAULT_CONTEXT_FRAMING = (
+    "I will give you a passage to edit. First, for reference only, here is the "
+    "text that surrounds it in the document.\n\n"
+    "--- text before the passage ---\n{before}\n\n"
+    "--- text after the passage ---\n{after}"
+)
+
+# Spoken as the model, to commit it to reading the context as reference only.
+# Off by default: words attributed to the model steer it in ways the system
+# prompt cannot see, so that should be a choice rather than a surprise.
+DEFAULT_PRIMED_REPLY = (
+    "Understood. I have read the surrounding text for reference only and will "
+    "not reproduce any of it. Send me the passage to edit."
+)
+
 DEFAULT_SETTINGS = {
     "max_new_tokens": 700,
     "temperature": 0.2,
@@ -51,13 +88,11 @@ DEFAULT_SETTINGS = {
     "overlap_pct": 0.0,
     "auto_accept_clean": False,
     "allow_deletions": False,  # whether the instructions may remove text
+    "passage_instruction": DEFAULT_PASSAGE_INSTRUCTION,
+    "context_framing": DEFAULT_CONTEXT_FRAMING,
+    "primed_reply": DEFAULT_PRIMED_REPLY,
+    "prime_reply": False,      # whether to speak the reply above as the model
 }
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a careful copy editor. Fix grammar, spelling, and punctuation. "
-    "Preserve the author's voice, meaning, and paragraph structure. Do not "
-    "add, remove, or reorder content."
-)
 
 PENDING, PROPOSED, ACCEPTED, ORIGINAL, FLAGGED = (
     "pending", "proposed", "accepted", "original", "flagged")
@@ -75,8 +110,13 @@ def normalize_settings(vals) -> dict:
             out[key] = cast(src.get(key, out[key]))
         except (TypeError, ValueError):
             pass
-    for key in ("auto_accept_clean", "allow_deletions"):
+    for key in ("auto_accept_clean", "allow_deletions", "prime_reply"):
         out[key] = bool(src.get(key, out[key]))
+    # Present-but-empty is meaningful — it means the author deleted our wording —
+    # so only fall back to the default when the key is absent or not a string.
+    for key in ("passage_instruction", "context_framing", "primed_reply"):
+        if isinstance(src.get(key), str):
+            out[key] = src[key]
     out["overlap_pct"] = min(0.45, max(0.0, out["overlap_pct"]))
     out["response_buffer"] = max(0, min(out["response_buffer"],
                                         out["max_new_tokens"] - 64))
@@ -259,12 +299,15 @@ def _window(job: dict, index: int) -> tuple[int, int]:
 def build_messages(job: dict, index: int, nudge: str = "") -> list[dict]:
     """Assemble the chat messages that ask for one span's rewrite.
 
-    Context goes in an earlier, answered turn; the passage arrives alone in the
-    final one. Splicing the passage into the middle of a single context blob —
-    even fenced off with markers — reliably makes the model start reproducing at
-    the top of the blob instead of at the passage. Measured against that layout,
-    this one took a failing span from 0.18 of its output tracing back to the
-    source to 0.99, and a span with no context at all reaches 1.00.
+    Context goes in an earlier turn; the passage arrives alone in the final one.
+    Splicing the passage into the middle of a single context blob — even fenced
+    off with markers — reliably makes the model start reproducing at the top of
+    the blob instead of at the passage. Measured against that layout, this one
+    took a failing span from 0.18 of its output tracing back to the source to
+    0.99, and a span with no context at all reaches 1.00.
+
+    Every word this adds around the passage comes from the job's settings, so it
+    is all visible and editable next to the system prompt it competes with.
     """
     spans = job["spans"]
     start, end = _window(job, index)
@@ -272,30 +315,29 @@ def build_messages(job: dict, index: int, nudge: str = "") -> list[dict]:
     after = "".join(s["original"] for s in spans[index + 1:end + 1])
     target = spans[index]["original"]
 
-    instruction = (
-        "Output only the corrected form of the passage below. Reproduce it in "
-        "full, with no commentary, no labels, and none of the surrounding text."
-    )
+    settings = normalize_settings(job.get("settings"))
+    instruction = settings["passage_instruction"]
     if nudge.strip():
-        instruction += f"\n\nAdditional instruction: {nudge.strip()}"
+        instruction = f"{instruction}\n\nAdditional instruction: {nudge.strip()}".strip()
+    if "{passage}" in instruction:
+        ask = instruction.replace("{passage}", target)
+    else:
+        ask = f"{instruction}\n\n{target}" if instruction.strip() else target
 
     turns = []
-    reference = []
-    if before.strip():
-        reference.append(f"--- text before the passage ---\n{before}")
-    if after.strip():
-        reference.append(f"--- text after the passage ---\n{after}")
-    if reference:
-        joined = "\n\n".join(reference)
-        turns += [
-            {"role": "user", "content":
-             "I will give you a passage to edit. First, for reference only, "
-             f"here is the text that surrounds it in the document.\n\n{joined}"},
-            {"role": "assistant", "content":
-             "Understood. I have read the surrounding text for reference only "
-             "and will not reproduce any of it. Send me the passage to edit."},
-        ]
-    turns.append({"role": "user", "content": f"{instruction}\n\n{target}"})
+    framing = settings["context_framing"]
+    context = ""
+    if (before.strip() or after.strip()) and framing.strip():
+        context = framing.replace("{before}", before).replace("{after}", after)
+    primed = settings["primed_reply"] if settings["prime_reply"] else ""
+    if context and primed.strip():
+        turns += [{"role": "user", "content": context},
+                  {"role": "assistant", "content": primed}]
+    elif context:
+        # Without a reply between them, two user turns in a row would run
+        # straight into chat templates that require alternating roles.
+        ask = f"{context}\n\n{ask}"
+    turns.append({"role": "user", "content": ask})
 
     system = (job.get("system_prompt") or "").strip()
     if not system:

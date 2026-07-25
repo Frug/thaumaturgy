@@ -128,6 +128,10 @@ def render():
             "overlap_pct": (overlap.value or 0) / 100.0,
             "auto_accept_clean": auto_accept.value,
             "allow_deletions": allow_deletions.value,
+            "passage_instruction": instruction_box.value or "",
+            "context_framing": framing_box.value or "",
+            "primed_reply": primed_box.value or "",
+            "prime_reply": prime_reply.value,
         })
         job = editing.create(title_box.value or "Untitled document", text,
                              system_box.value or editing.DEFAULT_SYSTEM_PROMPT,
@@ -486,6 +490,34 @@ def render():
                     temperature = ui.number("Temperature", value=0.2, min=0, max=2,
                                             step=0.05).props("filled") \
                         .classes("flex-1 tg-field")
+                # Every word the tool puts around the passage, laid out to be
+                # edited or emptied — it competes with the system prompt above,
+                # so it should not be something only the code knows about.
+                with ui.expansion("Prompt wrapper — text added around your passage") \
+                        .classes("w-full").props("dense"):
+                    ui.label(
+                        "Sent with every span. {passage}, {before} and {after} "
+                        "are substituted where they appear; leave a field empty "
+                        "to send nothing. Use Show prompt during a run to see "
+                        "the result verbatim."
+                    ).classes("text-xs text-muted mb-2")
+                    instruction_box = ui.textarea(
+                        "Passage instruction",
+                        value=editing.DEFAULT_PASSAGE_INSTRUCTION) \
+                        .props('filled input-style="height:90px"') \
+                        .classes("w-full tg-field")
+                    framing_box = ui.textarea(
+                        "Context framing (only used when Overlap % is above 0)",
+                        value=editing.DEFAULT_CONTEXT_FRAMING) \
+                        .props('filled input-style="height:120px"') \
+                        .classes("w-full tg-field")
+                    prime_reply = ui.switch(
+                        "Add a reply spoken as the model, before the passage")
+                    primed_box = ui.textarea(
+                        "Primed reply", value=editing.DEFAULT_PRIMED_REPLY) \
+                        .props('filled input-style="height:70px"') \
+                        .classes("w-full tg-field")
+                    primed_box.bind_visibility_from(prime_reply, "value")
                 allow_deletions = ui.switch("Instructions may remove text") \
                     .tooltip("Turn on when you're asking the model to strip "
                              "content, so a shrinking span isn't treated as a "
