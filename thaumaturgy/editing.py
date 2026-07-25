@@ -489,6 +489,7 @@ def start_span(job: dict, index: int, nudge: str = "") -> dict:
     run = {
         "job_id": job["id"],
         "index": index,
+        "messages": messages,  # kept so the page can show what was actually sent
         "text": "",
         "reasoning": "",
         "finish_reason": None,

@@ -186,6 +186,9 @@ def render():
             store.save_job(job)
         page["index"] = index
         page["run"] = editing.start_span(job, index, nudge)
+        # Outlives the run, so "show prompt" reports what was sent rather than
+        # rebuilding it from state that may have moved on since.
+        page["sent"] = (index, page["run"]["messages"])
         review.refresh()
         page["task"] = asyncio.create_task(observe(page["run"]))
 
@@ -291,6 +294,65 @@ def render():
             ui.button("Save & accept", icon="check", on_click=save_edit) \
                 .props("color=primary unelevated")
 
+    ROLE_COLOR = {"system": "purple", "user": "primary", "assistant": "teal"}
+
+    with ui.dialog() as prompt_dialog, ui.card().classes("p-5 gap-2") \
+            .style("width:1000px;max-width:96vw"):
+        ui.label("Prompt for this span").classes("text-lg font-semibold")
+        prompt_summary = ui.label().classes("text-xs text-muted font-mono")
+        prompt_scroll = ui.scroll_area().classes("w-full").style("height:64vh")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Copy", icon="content_copy",
+                      on_click=lambda: copy_prompt()).props("flat")
+            ui.button("Close", on_click=prompt_dialog.close).props("flat")
+
+    def current_messages():
+        """The messages for the open span — as sent, if this span has been run."""
+        job, index = page["job"], page["index"]
+        if job is None or index is None:
+            return None, False
+        sent = page.get("sent")
+        if sent and sent[0] == index:
+            return sent[1], True
+        return editing.build_messages(job, index, page.get("nudge", "")), False
+
+    def copy_prompt():
+        messages, _ = current_messages()
+        if not messages:
+            return
+        text = "\n\n".join(f"===== {m['role'].upper()} =====\n{m['content']}"
+                           for m in messages)
+        ui.clipboard.write(text)
+        ui.notify("Prompt copied.")
+
+    def show_prompt():
+        messages, as_sent = current_messages()
+        if not messages:
+            return
+        chars = sum(len(m["content"]) for m in messages)
+        target = page["job"]["spans"][page["index"]]["original"]
+        prompt_summary.text = (
+            f"{'as sent' if as_sent else 'as it would be sent now'} · "
+            f"{len(messages)} messages · {chars:,} chars "
+            f"(≈{editing.est_tokens(''.join(m['content'] for m in messages)):,} tok) · "
+            f"passage {len(target):,} chars · "
+            f"context {chars - len(target):,} chars"
+        )
+        prompt_scroll.clear()
+        with prompt_scroll:
+            for m in messages:
+                with ui.row().classes("items-center gap-2 mt-2"):
+                    ui.badge(m["role"].upper()) \
+                        .props(f"color={ROLE_COLOR.get(m['role'], 'grey')}") \
+                        .classes("font-mono text-[10px]")
+                    ui.label(f"{len(m['content']):,} chars").classes("text-xs text-muted")
+                # A plain label, not markdown: the document is arbitrary text and
+                # would otherwise be parsed (or break out of a code fence).
+                ui.label(m["content"]).classes(
+                    "text-xs font-mono whitespace-pre-wrap break-words w-full "
+                    "tg-prompt-block")
+        prompt_dialog.open()
+
     # ── Review panel ────────────────────────────────────────────────────────
     @ui.refreshable
     def review():
@@ -358,6 +420,9 @@ def render():
                 .props(f"flat color=secondary {'disable' if running else ''}")
             ui.button("Retry", icon="refresh", on_click=retry) \
                 .props(f"flat color=secondary {'disable' if running else ''}")
+            # Read-only, so it stays available mid-generation.
+            ui.button("Show prompt", icon="code", on_click=show_prompt) \
+                .props("flat color=secondary").classes("text-xs")
             ui.space()
             ui.label("running…" if running else "").classes("text-xs text-muted")
         ui.input("Retry instruction (optional)",

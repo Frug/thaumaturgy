@@ -112,6 +112,15 @@ _HEAD_HTML = """
     overflow: auto;
   }
   .body--dark .tg-span-box { background: rgba(52, 97, 140, 0.16); }
+
+  /* One message of the "show prompt" dump. */
+  .tg-prompt-block {
+    background: rgba(52, 97, 140, 0.06);
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.45;
+  }
+  .body--dark .tg-prompt-block { background: rgba(52, 97, 140, 0.16); }
   .tg-span-box pre {
     margin: 0;
     padding: 10px 12px;
