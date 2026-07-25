@@ -557,8 +557,19 @@ def next_pending(job: dict, after: int = -1) -> int | None:
 
 
 def progress(job: dict) -> tuple[int, int]:
-    decided = sum(1 for s in job["spans"] if s["status"] in (ACCEPTED, ORIGINAL))
-    return decided, len(job["spans"])
+    """How much of the document is decided, in source characters.
+
+    Not in spans: a span whose reply hits the token cap is halved and retried, so
+    the span count climbs part-way through a run. Counting spans makes the total
+    grow under the reader and the bar slide backwards, while the document itself
+    never changed length.
+    """
+    spans = job["spans"]
+    if not spans:
+        return 0, 0
+    done = sum(s["end"] - s["start"] for s in spans
+               if s["status"] in (ACCEPTED, ORIGINAL))
+    return done, spans[-1]["end"] - spans[0]["start"]
 
 
 # ── Job lifecycle ───────────────────────────────────────────────────────────

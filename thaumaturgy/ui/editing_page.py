@@ -25,9 +25,15 @@ FLAG_TEXT = {
 # stop splitting and hand it to the reviewer rather than shrinking forever.
 MAX_AUTO_SPLITS = 4
 
+
+def _percent(job: dict) -> int:
+    done, total = editing.progress(job)
+    return round(done / total * 100) if total else 0
+
+
 def _rel(job: dict) -> str:
     done, total = editing.progress(job)
-    return f"{done}/{total} spans"
+    return f"{_percent(job)}% · {done:,} of {total:,} chars"
 
 
 def render():
@@ -73,10 +79,7 @@ def render():
                 with item, ui.item_section().classes("min-w-0"):
                     ui.label(j.get("title") or "Untitled") \
                         .classes("font-medium text-sm ellipsis w-full")
-                    spans = j.get("spans") or []
-                    decided = sum(1 for s in spans
-                                  if s.get("status") in (editing.ACCEPTED, editing.ORIGINAL))
-                    ui.label(f"{decided}/{len(spans)} spans").classes("text-xs text-muted")
+                    ui.label(f"{_percent(j)}% edited").classes("text-xs text-muted")
                 with item, ui.item_section().props("side"):
                     ui.button(icon="delete",
                               on_click=lambda jid=j["id"]: remove_job(jid)) \
@@ -323,8 +326,11 @@ def render():
         span = job["spans"][index]
         running = page["run"] is not None
         with ui.row().classes("w-full items-center gap-2"):
-            ui.badge(f"span {index + 1} of {total}").props("color=secondary") \
-                .classes("font-mono text-[11px]")
+            ui.badge(f"span {index + 1} of {len(job['spans'])}") \
+                .props("color=secondary").classes("font-mono text-[11px]") \
+                .tooltip("A live count — a span whose reply hits the token cap "
+                         "is split in two and retried, so the total grows. The "
+                         "percentage above is measured against the document.")
             for flag in span["flags"]:
                 ui.badge(FLAG_TEXT.get(flag, flag)).props("color=warning text-color=dark") \
                     .classes("text-[11px]")
