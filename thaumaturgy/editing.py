@@ -21,6 +21,7 @@ No NiceGUI here: the page is presentation only.
 import math
 import re
 import threading
+from difflib import SequenceMatcher
 
 from thaumaturgy import appstate, engine, store
 
@@ -150,12 +151,18 @@ def pack_spans(text: str, budget_chars: int) -> list[tuple[int, int]]:
             end = a_end
     if start is not None:
         out.append((start, end))
-    # Fold a runt tail back into its neighbour. A span of a few characters costs
-    # a whole generation, gives the model almost nothing to work with, and falls
-    # under the length-ratio guard's floor — so nonsense comes back unflagged.
-    if len(out) > 1 and out[-1][1] - out[-1][0] < MIN_SPAN_CHARS:
-        tail = out.pop()
-        out[-1] = (out[-1][0], tail[1])
+    # Fold a runt tail back into its neighbour. Packing leaves one whenever the
+    # text divides unevenly — most visibly when split_span halves an over-long
+    # span. A lone sentence costs a whole generation and gives the model so
+    # little to work from that it treats the fragment as a writing prompt and
+    # returns fresh prose instead of a correction. Skipped when merging would
+    # overshoot the budget enough to risk truncating the result.
+    if len(out) > 1:
+        runt = out[-1][1] - out[-1][0]
+        merged = out[-1][1] - out[-2][0]
+        if runt < max(MIN_SPAN_CHARS, budget_chars // 4) and merged <= budget_chars * 1.15:
+            tail = out.pop()
+            out[-1] = (out[-1][0], tail[1])
     return out
 
 
@@ -305,6 +312,12 @@ MIN_RATIO, MAX_RATIO = 0.5, 2.0
 _RATIO_FLOOR = 40
 _BLEED_WINDOW = 60
 
+# Below this much overlap with the original, the model has written new prose
+# rather than corrected the old. Measured: real copy edits — including heavy
+# rewordings — sit at 0.89-0.99, while an outright rewrite lands near 0.2, so
+# the threshold has wide margin on both sides.
+MIN_SIMILARITY = 0.6
+
 
 def _flat(text: str) -> str:
     return " ".join(text.split())
@@ -367,6 +380,11 @@ def check_output(job: dict, index: int, text: str,
     # edit, and only the reviewer can tell the two apart.
     if text.count("\n\n") < original.count("\n\n"):
         flags.append("lost-break")
+    # Catches the failure the length checks miss: a fluent replacement of about
+    # the right size that keeps none of the author's words. Creative models slip
+    # into this readily, especially on a short span.
+    if SequenceMatcher(None, _flat(original), _flat(text)).ratio() < MIN_SIMILARITY:
+        flags.append("rewritten")
     # Skipped on very short spans (a trailing fragment, say), where one added
     # word swings the ratio past the threshold on its own.
     if len(original) >= _RATIO_FLOOR:

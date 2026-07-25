@@ -17,6 +17,7 @@ FLAG_TEXT = {
     "length-ratio": "Length differs sharply from the original",
     "context-bleed": "Output ran past the span markers",
     "lost-break": "A paragraph break inside the span was dropped",
+    "rewritten": "Rewritten rather than corrected — few of the original words remain",
     "error": "Generation failed",
 }
 
