@@ -11,8 +11,6 @@ NOTE: fonts currently load from Google Fonts. For a fully-offline build we'll
 self-host them later; kept as a CDN link for now to iterate on the look.
 """
 
-from nicegui import ui
-
 # Brand colors passed to Quasar via ui.colors() (called per page/client).
 # Deep steel blue chosen to read well on the dark/night theme (white text on
 # the active nav item stays high-contrast).
@@ -220,8 +218,3 @@ _HEAD_HTML = """
 def head_html() -> str:
     """The <head> block (fonts + global CSS). Added once, globally."""
     return _HEAD_HTML
-
-
-def apply_colors() -> None:
-    """Apply brand colors for the current page/client. Call inside a page."""
-    ui.colors(**COLORS)
