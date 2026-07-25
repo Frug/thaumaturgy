@@ -25,6 +25,11 @@ _CONTROL_RE = re.compile(
     r"<\|start\|>[ \t]*assistant|<\|(?:start|end|return|message)\|>|<channel\|>")
 _THOUGHT_CHANNELS = {"thought", "thinking", "reasoning", "analysis"}
 
+# Each streamed update re-parses the whole message as markdown, so cap the
+# re-render rate and prefer to land it on a newline boundary.
+_STREAM_MIN_INTERVAL = 0.2
+_STREAM_MAX_INTERVAL = 0.4
+
 
 def _rel_time(ts: float | None) -> str:
     if not ts:
@@ -67,6 +72,24 @@ def _message_warning(m: dict) -> str | None:
 
 def _join_blocks(parts: list[str]) -> str:
     return "\n\n".join(part.strip() for part in parts if part and part.strip()).strip()
+
+
+def _soften_indent(text: str) -> str:
+    """Drop per-line leading whitespace outside fenced code.
+
+    Models indent their scratchpad bullets, which markdown renders as code
+    blocks; flattening keeps them as lists and prose.
+    """
+    if "\n" not in text and not text[:1].isspace():
+        return text
+    out, fenced = [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append(line)
+        else:
+            out.append(line if fenced else line.lstrip())
+    return "\n".join(out)
 
 
 def _split_reasoning_channels(text: str) -> tuple[str, str]:
@@ -133,10 +156,10 @@ class _MessageView:
         return self.text_md.is_deleted
 
     def update(self, text: str, reasoning: str) -> None:
-        self.text_md.content = text
+        self.text_md.content = _soften_indent(text)
         if self.reasoning_box is None:
             return
-        self.reasoning_md.content = reasoning
+        self.reasoning_md.content = _soften_indent(reasoning)
         self.reasoning_box.set_visibility(bool(reasoning.strip()))
 
 
@@ -159,12 +182,12 @@ def _message(m: dict, on_scenario_click=None) -> _MessageView:
             bubble.style("background: rgba(52,97,140,0.10)")
         with bubble:
             text, reasoning = _message_text_and_reasoning(m)
-            md = ui.markdown(text).classes("text-sm leading-relaxed break-words")
+            md = ui.markdown(_soften_indent(text)).classes("text-sm leading-relaxed break-words")
             box = reasoning_md = None
             if not is_user:
                 box = ui.expansion("Thinking", icon="psychology").classes("w-full")
                 with box:
-                    reasoning_md = ui.markdown(reasoning).classes(
+                    reasoning_md = ui.markdown(_soften_indent(reasoning)).classes(
                         "text-xs leading-relaxed break-words text-muted")
                 box.set_visibility(bool(reasoning))
             warning = _message_warning(m)
@@ -427,6 +450,8 @@ def render():
     async def observe_generation(generation: dict):
         """Mirror a running generation into the transcript until it finishes."""
         last = None
+        last_render = 0.0
+        last_newlines = 0
         try:
             while not generation["done"]:
                 await asyncio.sleep(0.1)
@@ -437,10 +462,18 @@ def render():
                     return
                 assistant = generation["assistant"]
                 current = (assistant.get("text", ""), assistant.get("reasoning", ""))
-                if current != last:
+                if current == last:
+                    continue
+                now = time.monotonic()
+                elapsed = now - last_render
+                newlines = current[0].count("\n") + current[1].count("\n")
+                if elapsed >= _STREAM_MAX_INTERVAL or (
+                        elapsed >= _STREAM_MIN_INTERVAL and newlines > last_newlines):
                     view.update(*current)
                     scroll_bottom()
                     last = current
+                    last_render = now
+                    last_newlines = newlines
 
             if not observing(generation):
                 return
