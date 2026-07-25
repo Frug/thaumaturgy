@@ -18,6 +18,7 @@ FLAG_TEXT = {
     "context-bleed": "Output ran past the span markers",
     "lost-break": "A paragraph break inside the span was dropped",
     "invented": "Contains prose that isn't in the original",
+    "stops-short": "Stops partway — the end of the span is missing",
     "error": "Generation failed",
 }
 
@@ -308,8 +309,8 @@ def render():
 
         b = job["budgets"]
         ui.label(
-            f"span target {b['span_target']} tok · body {b['body']} tok · "
-            f"overlap {b['overlap']} tok each side · chunk core {b['core']} tok"
+            f"span target {b['span_target']} tok · overlap {b['overlap']} tok "
+            f"each side · prompt ≈ {b['span_target'] * 2 + b['overlap'] * 2} tok"
         ).classes("text-xs text-muted font-mono")
 
         if index is None:

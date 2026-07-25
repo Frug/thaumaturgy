@@ -6,14 +6,16 @@ generation rewrites one bounded span, with the surrounding text supplied as
 read-only context. Accepted rewrites are spliced back in and become context for
 the spans below them.
 
-Two levels, both of which earn their place:
+The prompt around each span is deliberately narrow: `overlap` tokens of already
+corrected text behind it, the marked span, and `overlap` tokens of original text
+ahead. Context bought that cheaply keeps terminology and voice consistent across
+the joins. Buying more is actively harmful — given a long stretch of prose that
+all reads alike, a model told to reproduce the marked part will drift out of it
+and start retelling the rest.
 
-  * Chunks anchor the *start* of the prompt body for a run of spans. Splicing
-    invalidates llama.cpp's KV cache from the splice point onward, but the
-    splice point only moves forward — so as long as the body's start is pinned,
-    everything above the cursor stays cached. A window that slid every span
-    would reset the cache every span.
-  * Spans are the unit the model actually rewrites, sized to fit the reply cap.
+Span size is the other half of that: the model has to reproduce the whole span
+verbatim apart from its corrections, and fidelity falls off a cliff once a span
+grows past a few hundred tokens.
 
 No NiceGUI here: the page is presentation only.
 """
@@ -216,28 +218,12 @@ def budgets(settings: dict, context_limit: int | None,
     if engine.server.thinking_enabled() and engine.server.reasoning_budget > 0:
         reserve += engine.server.reasoning_budget
     usable = max(1024, (context_limit or 8192) - reserve)
-    body = max(512, usable - span_target - PROMPT_OVERHEAD)
-    overlap = int(body * settings["overlap_pct"])
-    core = max(span_target, body - 2 * overlap)
-    return {"span_target": span_target, "body": body,
-            "overlap": overlap, "core": core}
-
-
-def assign_chunks(spans: list[dict], core_tokens: int) -> list[int]:
-    """Map each span to a chunk index; chunks fill `core_tokens` of document.
-
-    The chunk index is what pins the prompt body's start position, which is what
-    keeps the cached prefix alive across the spans inside it.
-    """
-    out, chunk, used = [], 0, 0
-    for span in spans:
-        size = est_tokens(span["original"])
-        if used and used + size > core_tokens:
-            chunk += 1
-            used = 0
-        out.append(chunk)
-        used += size
-    return out
+    # The span occupies the prompt twice: marked in place, and restated at the
+    # tail for the model to copy from.
+    available = max(512, usable - 2 * span_target - PROMPT_OVERHEAD)
+    overlap = int(available * settings["overlap_pct"])
+    return {"span_target": span_target, "available": available,
+            "overlap": overlap}
 
 
 def current_text(span: dict) -> str:
@@ -253,21 +239,18 @@ def assemble(job: dict) -> str:
 def _window(job: dict, index: int) -> tuple[int, int]:
     """First and last span index (inclusive) of the prompt body around `index`.
 
-    Lookbehind reaches back to the start of the span's chunk and then `overlap`
-    tokens further; lookahead runs `overlap` tokens past the chunk's end.
+    Centred on the span itself: `overlap` tokens of corrected text behind it and
+    `overlap` tokens of original text ahead, and nothing more. Reaching wider
+    buries the passage in prose that reads just like it, and a model asked to
+    reproduce the marked part instead wanders off into the rest.
     """
     spans = job["spans"]
-    chunks = assign_chunks(spans, job["budgets"]["core"])
     overlap = job["budgets"]["overlap"]
-    chunk = chunks[index]
-    first = next(i for i, c in enumerate(chunks) if c == chunk)
-    last = max(i for i, c in enumerate(chunks) if c == chunk)
-
-    start, used = first, 0
+    start, used = index, 0
     while start > 0 and used + est_tokens(current_text(spans[start - 1])) <= overlap:
         start -= 1
         used += est_tokens(current_text(spans[start]))
-    end, used = last, 0
+    end, used = index, 0
     while end < len(spans) - 1 and used + est_tokens(spans[end + 1]["original"]) <= overlap:
         end += 1
         used += est_tokens(spans[end]["original"])
@@ -317,6 +300,13 @@ MIN_RATIO = 0.5
 MIN_RATIO_DELETING = 0.1
 _RATIO_FLOOR = 40
 _BLEED_WINDOW = 60
+# Shortest run of shared text worth treating as a real alignment, not noise.
+_ALIGN_BLOCK = 20
+
+# How far through the original the rewrite's closing words must fall. Catches a
+# model that stops partway and drops the rest of the span — invisible to every
+# length check once the job allows deletions, since both just come back short.
+MIN_END_COVERAGE = 0.8
 
 # Least share of the *output* that must trace back to the original. Measured:
 # a pure deletion scores 1.00 and a light copy edit 0.98, while prose the model
@@ -328,6 +318,30 @@ MIN_DRAWN_FROM_SOURCE = 0.6
 
 def _flat(text: str) -> str:
     return " ".join(text.split())
+
+
+def reaches_end(original: str, text: str) -> bool:
+    """Whether the rewrite carries through to the end of the span.
+
+    A model that gives up halfway returns exactly what one that deleted a lot
+    returns — both simply come back short, and once a job allows deletions no
+    length check can separate them. But an honest edit still finishes where the
+    span finishes, so find the output's closing words in the original and see
+    how far through they fall.
+    """
+    a, b = _flat(original), _flat(text)
+    if len(a) < _BLEED_WINDOW or len(b) < _BLEED_WINDOW:
+        return True
+    # Aligned rather than searched for: hunting the closing words directly finds
+    # their *last* occurrence, which in repetitive prose sits at the end however
+    # early the model actually stopped. An alignment advances monotonically, so
+    # its final block lands where the output genuinely ran out.
+    blocks = [bl for bl in SequenceMatcher(None, a, b).get_matching_blocks()
+              if bl.size >= _ALIGN_BLOCK]
+    if not blocks:
+        return True  # nothing of the author's survives; that's invention's to flag
+    last = blocks[-1]
+    return (last.a + last.size) / len(a) >= MIN_END_COVERAGE
 
 
 def drawn_from_source(original: str, text: str) -> float:
@@ -411,6 +425,8 @@ def check_output(job: dict, index: int, text: str,
     # into this readily, especially on a short span.
     if drawn_from_source(original, text) < MIN_DRAWN_FROM_SOURCE:
         flags.append("invented")
+    if not reaches_end(original, text):
+        flags.append("stops-short")
     # Skipped on very short spans (a trailing fragment, say), where one added
     # word swings the ratio past the threshold on its own.
     if len(original) >= _RATIO_FLOOR:
