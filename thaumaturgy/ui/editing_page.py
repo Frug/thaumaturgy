@@ -13,7 +13,6 @@ from thaumaturgy import appstate, editing, engine, store
 FLAG_TEXT = {
     "truncated": "Reply hit the token cap",
     "empty": "Model returned nothing",
-    "markers": "Output contains span markers",
     "length-ratio": "Length differs sharply from the original",
     "context-bleed": "Output ran past the span markers",
     "lost-break": "A paragraph break inside the span was dropped",
@@ -408,10 +407,11 @@ def render():
                         .classes("flex-1 tg-field") \
                         .tooltip("How far under the reply cap to size each span")
                 with ui.row().classes("w-full gap-3 items-end no-wrap"):
-                    overlap = ui.number("Overlap %", value=10, min=0, max=45, step=1) \
+                    overlap = ui.number("Overlap %", value=0, min=0, max=45, step=1) \
                         .props("filled").classes("flex-1 tg-field") \
-                        .tooltip("Context kept either side of the editable core. "
-                                 "Lookahead is re-read every span, so larger costs more.")
+                        .tooltip("Surrounding text shown to the model for consistency. "
+                                 "0 is the most faithful — context is the main "
+                                 "cause of a model drifting out of the passage.")
                     temperature = ui.number("Temperature", value=0.2, min=0, max=2,
                                             step=0.05).props("filled") \
                         .classes("flex-1 tg-field")

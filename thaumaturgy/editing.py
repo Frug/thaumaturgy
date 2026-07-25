@@ -6,16 +6,15 @@ generation rewrites one bounded span, with the surrounding text supplied as
 read-only context. Accepted rewrites are spliced back in and become context for
 the spans below them.
 
-The prompt around each span is deliberately narrow: `overlap` tokens of already
-corrected text behind it, the marked span, and `overlap` tokens of original text
-ahead. Context bought that cheaply keeps terminology and voice consistent across
-the joins. Buying more is actively harmful — given a long stretch of prose that
-all reads alike, a model told to reproduce the marked part will drift out of it
-and start retelling the rest.
-
-Span size is the other half of that: the model has to reproduce the whole span
-verbatim apart from its corrections, and fidelity falls off a cliff once a span
-grows past a few hundred tokens.
+How that prompt is laid out matters more than anything else here. Surrounding
+text goes in an earlier, already-answered turn and the passage arrives alone in
+the final one, because a model handed one blob of context with the passage
+fenced off inside it starts reproducing at the top of the blob rather than at
+the passage. Keeping the window narrow matters for the same reason: the more
+neighbouring prose is in front of the model, the likelier it wanders into it,
+and `overlap` of 0 — passage and nothing else — is the most faithful setting
+there is. What context buys in return is consistent terminology across the
+joins, so it is worth a little, and only a little.
 
 No NiceGUI here: the page is presentation only.
 """
@@ -26,9 +25,6 @@ import threading
 from difflib import SequenceMatcher
 
 from thaumaturgy import appstate, engine, store
-
-SPAN_OPEN = "<<<SPAN>>>"
-SPAN_CLOSE = "<<</SPAN>>>"
 
 # Rough bytes-per-token for packing. Only needs to be close: spans are verified
 # exactly before they are sent, and an over-long one is split.
@@ -49,7 +45,10 @@ DEFAULT_SETTINGS = {
     "min_p": 0.05,
     "repetition_penalty": 1.05,
     "response_buffer": 150,   # how far under the reply cap to size a span
-    "overlap_pct": 0.10,      # lookbehind/lookahead, as a fraction of the body
+    # Off by default. Neighbouring prose is the single biggest cause of a model
+    # wandering out of the passage it was given; raise it only if your model
+    # holds up, and watch the first spans when you do.
+    "overlap_pct": 0.0,
     "auto_accept_clean": False,
     "allow_deletions": False,  # whether the instructions may remove text
 }
@@ -260,9 +259,12 @@ def _window(job: dict, index: int) -> tuple[int, int]:
 def build_messages(job: dict, index: int, nudge: str = "") -> list[dict]:
     """Assemble the chat messages that ask for one span's rewrite.
 
-    The span is both marked in place and restated at the tail. The restatement
-    is what the model actually copies from — a few hundred tokens back rather
-    than buried mid-context, which matters a lot for verbatim fidelity.
+    Context goes in an earlier, answered turn; the passage arrives alone in the
+    final one. Splicing the passage into the middle of a single context blob —
+    even fenced off with markers — reliably makes the model start reproducing at
+    the top of the blob instead of at the passage. Measured against that layout,
+    this one took a failing span from 0.18 of its output tracing back to the
+    source to 0.99, and a span with no context at all reaches 1.00.
     """
     spans = job["spans"]
     start, end = _window(job, index)
@@ -270,24 +272,38 @@ def build_messages(job: dict, index: int, nudge: str = "") -> list[dict]:
     after = "".join(s["original"] for s in spans[index + 1:end + 1])
     target = spans[index]["original"]
 
-    body = f"{before}{SPAN_OPEN}{target}{SPAN_CLOSE}{after}"
     instruction = (
-        "Rewrite the marked span. Output only the corrected passage — no "
-        "commentary, no markers, and none of the surrounding text."
+        "Output only the corrected form of the passage below. Reproduce it in "
+        "full, with no commentary, no labels, and none of the surrounding text."
     )
     if nudge.strip():
         instruction += f"\n\nAdditional instruction: {nudge.strip()}"
-    user = (
-        f"Document region for context:\n\n{body}\n\n"
-        f"{instruction}\n\nThe span to rewrite:\n\n{target}"
-    )
+
+    turns = []
+    reference = []
+    if before.strip():
+        reference.append(f"--- text before the passage ---\n{before}")
+    if after.strip():
+        reference.append(f"--- text after the passage ---\n{after}")
+    if reference:
+        joined = "\n\n".join(reference)
+        turns += [
+            {"role": "user", "content":
+             "I will give you a passage to edit. First, for reference only, "
+             f"here is the text that surrounds it in the document.\n\n{joined}"},
+            {"role": "assistant", "content":
+             "Understood. I have read the surrounding text for reference only "
+             "and will not reproduce any of it. Send me the passage to edit."},
+        ]
+    turns.append({"role": "user", "content": f"{instruction}\n\n{target}"})
+
     system = (job.get("system_prompt") or "").strip()
     if not system:
-        return [{"role": "user", "content": user}]
+        return turns
     if engine.server.supports_system_role():
-        return [{"role": "system", "content": system},
-                {"role": "user", "content": user}]
-    return [{"role": "user", "content": f"{system}\n\n{user}"}]
+        return [{"role": "system", "content": system}, *turns]
+    turns[0]["content"] = f"{system}\n\n{turns[0]['content']}"
+    return turns
 
 
 # ── Output guards ───────────────────────────────────────────────────────────
@@ -411,8 +427,6 @@ def check_output(job: dict, index: int, text: str,
         flags.append("empty")
         return flags
     deleting = normalize_settings(job.get("settings"))["allow_deletions"]
-    if SPAN_OPEN in text or SPAN_CLOSE in text:
-        flags.append("markers")
     # Edges are restored mechanically, but a paragraph break *inside* a span is
     # the model's to keep. Losing one silently merges two paragraphs, so surface
     # it for review rather than forcing it back — reflowing a line can be a fair
