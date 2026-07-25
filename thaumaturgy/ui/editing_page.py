@@ -92,16 +92,25 @@ def render():
         show_panels()
 
     # ── Intake ──────────────────────────────────────────────────────────────
-    def take_upload(e):
+    async def take_upload(e):
+        # Broad catch on purpose: NiceGUI logs a handler exception server-side
+        # and still tells the browser the upload succeeded, so anything escaping
+        # here looks to the user like the file silently did nothing.
         try:
-            text = e.content.read().decode("utf-8")
-        except (UnicodeDecodeError, OSError) as exc:
+            text = await e.file.text()
+        except Exception as exc:  # noqa: BLE001
             ui.notify(f"Could not read that file: {exc}", type="negative")
             return
         doc_box.value = text
         if not title_box.value:
-            title_box.value = e.name
-        ui.notify(f"Loaded {e.name} ({len(text):,} characters)")
+            title_box.value = e.file.name
+        ui.notify(f"Loaded {e.file.name} ({len(text):,} characters)")
+
+    def reject_upload(_):
+        # Quasar filters on `accept` before uploading; without this the file
+        # just vanishes with no indication of why.
+        ui.notify("That file type isn't accepted — use a .txt or .md file.",
+                  type="warning")
 
     def create_job():
         text = doc_box.value or ""
@@ -379,8 +388,8 @@ def render():
             with intake_card:
                 ui.label("New editing job").classes("text-lg font-semibold")
                 title_box = ui.input("Title").props("filled").classes("w-full tg-field")
-                ui.upload(on_upload=take_upload, auto_upload=True,
-                          label="Upload a .txt/.md file") \
+                ui.upload(on_upload=take_upload, on_rejected=reject_upload,
+                          auto_upload=True, label="Upload a .txt/.md file") \
                     .props("flat bordered accept=.txt,.md,.markdown") \
                     .classes("w-full tg-field")
                 doc_box = ui.textarea("Document") \
