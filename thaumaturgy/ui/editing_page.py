@@ -320,6 +320,8 @@ def render():
     # ── Saved instruction sets ──────────────────────────────────────────────
     # The prompt text is the part worth carrying between documents; the token
     # sizes belong to the document and the model, so they stay with the job.
+    picking = {"suppress": False}
+
     def current_instructions() -> dict:
         return {
             "system_prompt": system_box.value or "",
@@ -343,18 +345,26 @@ def render():
             sets = {"Copy edit": editing.default_instructions()}
             store.save_edit_prompts(sets)
         names = sorted(sets)
-        saved_select.options = names
-        if select_name in names:
-            saved_select.value = select_name
-        elif saved_select.value not in names:
-            saved_select.value = names[0] if names else None
-        saved_select.update()
+        # Rebuilding the list moves `value`, which fires the change handler and
+        # would overwrite whatever is in the fields. Only a real pick should load.
+        picking["suppress"] = True
+        try:
+            saved_select.options = names
+            if select_name in names:
+                saved_select.value = select_name
+            elif saved_select.value not in names:
+                # Left unselected rather than defaulted, so the box never names a
+                # set the fields below don't actually contain.
+                saved_select.value = None
+            saved_select.update()
+        finally:
+            picking["suppress"] = False
 
-    def load_saved() -> None:
+    def load_saved(name: str | None) -> None:
+        if picking["suppress"] or not name:
+            return
         sets = store.load_edit_prompts()
-        name = saved_select.value
         if name not in sets:
-            ui.notify("Pick a saved set first.", type="warning")
             return
         apply_instructions(sets[name])
         ui.notify(f"Loaded “{name}”.")
@@ -383,7 +393,7 @@ def render():
             return
         del sets[name]
         store.save_edit_prompts(sets)
-        refresh_saved(sorted(sets)[0] if sets else None)
+        refresh_saved()
         ui.notify(f"Deleted “{name}”.")
 
     with ui.dialog() as save_dialog, ui.card().classes("p-5 gap-3") \
@@ -579,10 +589,10 @@ def render():
                 doc_box = ui.textarea("Document") \
                     .props('filled input-style="height:220px"').classes("w-full tg-field")
                 with ui.row().classes("w-full gap-2 items-end no-wrap"):
-                    saved_select = ui.select([], label="Saved instructions") \
+                    saved_select = ui.select(
+                        [], label="Saved instructions",
+                        on_change=lambda e: load_saved(e.value)) \
                         .props("filled dense").classes("flex-1 tg-field")
-                    ui.button("Load", icon="download", on_click=lambda: load_saved()) \
-                        .props("flat color=primary").classes("text-xs")
                     ui.button("Save as…", icon="save", on_click=lambda: open_save()) \
                         .props("flat color=positive").classes("text-xs")
                     ui.button(icon="delete", on_click=lambda: delete_saved()) \
