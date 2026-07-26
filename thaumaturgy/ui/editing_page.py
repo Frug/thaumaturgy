@@ -623,10 +623,10 @@ def render():
                 with ui.expansion("Prompt wrapper — text added around your passage") \
                         .classes("w-full").props("dense"):
                     ui.label(
-                        "Sent with every span. {passage}, {before} and {after} "
-                        "are substituted where they appear; leave a field empty "
-                        "to send nothing. Use Show prompt during a run to see "
-                        "the result verbatim."
+                        "Sent with every span. {passage}, {before}, {after}, "
+                        "{first_words} and {last_words} are substituted where "
+                        "they appear; leave a field empty to send nothing. Use "
+                        "Show prompt during a run to see the result verbatim."
                     ).classes("text-xs text-muted mb-2")
                     instruction_box = ui.textarea(
                         "Passage instruction",

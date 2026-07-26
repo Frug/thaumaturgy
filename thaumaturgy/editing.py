@@ -52,15 +52,22 @@ DEFAULT_SYSTEM_PROMPT = (
 # it competes with the user's own system prompt, so whoever writes that prompt
 # should be able to see this text and overrule it.
 #
-# {passage}, {before} and {after} are substituted where they appear. A template
-# with no placeholder still works — the passage is appended, and the context
-# sections are dropped. Substitution is a literal replace, so stray braces in
-# the text are harmless.
+# {passage}, {before} and {after} are substituted where they appear, as are
+# {first_words} and {last_words} — the passage's own opening and closing words,
+# quoted back so "the whole passage" has concrete ends. A template with no
+# placeholder still works: the passage is appended and the context sections are
+# dropped. Substitution is a literal replace, so stray braces stay harmless.
 
 DEFAULT_PASSAGE_INSTRUCTION = (
     "Output only the corrected form of the passage below. Reproduce it in "
-    "full, with no commentary, no labels, and none of the surrounding text."
+    "full: your output must begin with \"{first_words}\" and end with "
+    "\"{last_words}\". No commentary, no labels, and none of the surrounding "
+    "text."
 )
+
+# Words quoted back to the model to pin the ends of the passage. Enough to be
+# unambiguous in a repetitive document, few enough to stay readable.
+EDGE_WORDS = 8
 
 DEFAULT_CONTEXT_FRAMING = (
     "I will give you a passage to edit. First, for reference only, here is the "
@@ -349,7 +356,15 @@ def build_messages(job: dict, index: int, nudge: str = "") -> list[dict]:
     target = spans[index]["original"]
 
     settings = normalize_settings(job.get("settings"))
-    instruction = settings["passage_instruction"]
+    # Quoting the passage's own opening and closing words back to the model
+    # turns "the entire passage" from a description into two checkable anchors.
+    # Without them it decides for itself where the interesting part starts and
+    # stops, and returns only that — which is how spans come back as a lone
+    # paragraph, or as their own tail.
+    words = _flat(target).split()
+    instruction = (settings["passage_instruction"]
+                   .replace("{first_words}", " ".join(words[:EDGE_WORDS]))
+                   .replace("{last_words}", " ".join(words[-EDGE_WORDS:])))
     if nudge.strip():
         instruction = f"{instruction}\n\nAdditional instruction: {nudge.strip()}".strip()
     if "{passage}" in instruction:
