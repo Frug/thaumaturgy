@@ -300,6 +300,38 @@ def render():
         job_list.refresh()
         advance()
 
+    def restart_job():
+        """Back to the intake form with this job's settings, to run it again.
+
+        Non-destructive: pressing Start editing makes a new job from the
+        original document, and the one being restarted keeps its decisions.
+        """
+        job = page["job"]
+        if job is None:
+            return
+        if page["run"] and not page["run"]["done"]:
+            ui.notify("Stop the current span first.", type="warning")
+            return
+        s = editing.normalize_settings(job.get("settings"))
+        title_box.value = job.get("title") or ""
+        doc_box.value = job.get("source_text") or ""
+        system_box.value = job.get("system_prompt") or ""
+        max_new.value = s["max_new_tokens"]
+        buffer_box.value = s["response_buffer"]
+        overlap.value = round(s["overlap_pct"] * 100)
+        temperature.value = s["temperature"]
+        auto_accept.value = s["auto_accept_clean"]
+        allow_deletions.value = s["allow_deletions"]
+        instruction_box.value = s["passage_instruction"]
+        framing_box.value = s["context_framing"]
+        primed_box.value = s["primed_reply"]
+        prime_reply.value = s["prime_reply"]
+        page.update(job=None, index=None, run=None)
+        job_list.refresh()
+        show_panels()
+        ui.notify("Loaded this job's document and settings. Adjust anything, "
+                  "then press Start editing — the old job is left as it is.")
+
     def export():
         job = page["job"]
         if job is None:
@@ -482,6 +514,11 @@ def render():
             ui.label(job.get("title") or "Untitled").classes("text-lg font-semibold")
             ui.space()
             ui.label(_rel(job)).classes("text-sm text-muted font-mono")
+            ui.button("Restart", icon="restart_alt", on_click=restart_job) \
+                .props("flat dense color=secondary").classes("text-xs") \
+                .tooltip("Reopen the new-job form with this document and "
+                         "settings, to run it again with something changed. "
+                         "This job is kept as it is.")
             ui.button("Export", icon="download", on_click=export) \
                 .props("flat dense color=secondary").classes("text-xs")
         ui.linear_progress(value=(done / total) if total else 0.0, show_value=False) \
