@@ -18,6 +18,7 @@ FLAG_TEXT = {
     "lost-break": "A paragraph break inside the span was dropped",
     "invented": "Contains prose that isn't in the original",
     "stops-short": "Stops partway — the end of the span is missing",
+    "starts-late": "Skips the opening — the start of the span is missing",
     "error": "Generation failed",
 }
 

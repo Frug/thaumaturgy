@@ -369,9 +369,13 @@ _ALIGN_BLOCK = 20
 # length check once the job allows deletions, since both just come back short.
 MIN_END_COVERAGE = 0.8
 
-# A reply at least this share of the original's length has not run out early,
-# whatever its ending aligns to.
+# A reply at least this share of the original's length has neither run out early
+# nor skipped its opening, whatever its edges align to.
 MIN_END_LENGTH = 0.9
+
+# How far into the original the rewrite's opening words may fall before it has
+# clearly skipped the start of the passage.
+MAX_START_OFFSET = 0.1
 
 # Least share of the *output* that must trace back to the original. Measured:
 # a pure deletion scores 1.00 and a light copy edit 0.98, while prose the model
@@ -413,6 +417,27 @@ def reaches_end(original: str, text: str) -> bool:
         return True  # nothing of the author's survives; that's invention's to flag
     last = blocks[-1]
     return (last.a + last.size) / len(a) >= MIN_END_COVERAGE
+
+
+def starts_at_start(original: str, text: str) -> bool:
+    """Whether the rewrite opens where the passage opens.
+
+    The mirror of reaches_end, and the case it catches is nastier: told to edit
+    one speaker's lines, a model will skip ahead to them and drop everything
+    before, returning the rest verbatim. Every other check reads that as clean —
+    nothing was invented, the ending lines up, and the length can still sit
+    inside the ratio — so without this it lands in the document unremarked.
+    """
+    a, b = _flat(original), _flat(text)
+    if len(a) < _BLEED_WINDOW or len(b) < _BLEED_WINDOW:
+        return True
+    if len(b) >= len(a) * MIN_END_LENGTH:
+        return True
+    blocks = [bl for bl in SequenceMatcher(None, a, b).get_matching_blocks()
+              if bl.size >= _ALIGN_BLOCK]
+    if not blocks:
+        return True  # nothing of the author's survives; that's invention's to flag
+    return blocks[0].a <= len(a) * MAX_START_OFFSET
 
 
 def drawn_from_source(original: str, text: str) -> float:
@@ -496,6 +521,8 @@ def check_output(job: dict, index: int, text: str,
         flags.append("invented")
     if not reaches_end(original, text):
         flags.append("stops-short")
+    if not starts_at_start(original, text):
+        flags.append("starts-late")
     # Skipped on very short spans (a trailing fragment, say), where one added
     # word swings the ratio past the threshold on its own.
     if len(original) >= _RATIO_FLOOR:
