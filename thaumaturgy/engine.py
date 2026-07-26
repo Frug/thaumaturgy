@@ -25,7 +25,7 @@ from pathlib import Path
 import requests
 
 from thaumaturgy import appstate, llama_bins, metadata_gguf, store
-from thaumaturgy.paths import sub_dir
+from thaumaturgy.paths import log_dir, sub_dir
 
 SERVER_LOG_LIMIT = 500
 
@@ -206,6 +206,23 @@ class LlamaServer:
             return
         with self._log_lock:
             self._log_lines.append(text)
+        self._log_to_file(text)
+
+    def _log_to_file(self, text: str) -> None:
+        """Mirror a line to $THAUM_LOG_DIR/llama-server.log, if that is set.
+
+        Timings and the GPU layer split are printed once and then scroll out of
+        the ring buffer; on disk they survive long enough to diagnose from.
+        Never raises: a full or unwritable disk must not take the server down.
+        """
+        directory = log_dir()
+        if directory is None:
+            return
+        try:
+            with (directory / "llama-server.log").open("a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+        except OSError:
+            pass
 
     def _capture_output(self, stream) -> None:
         try:

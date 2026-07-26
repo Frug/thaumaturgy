@@ -19,12 +19,15 @@ joins, so it is worth a little, and only a little.
 No NiceGUI here: the page is presentation only.
 """
 
+import json
 import math
 import re
 import threading
+import time
 from difflib import SequenceMatcher
 
 from thaumaturgy import appstate, engine, store
+from thaumaturgy.paths import log_dir
 
 # Rough bytes-per-token for packing. Only needs to be close: spans are verified
 # exactly before they are sent, and an over-long one is split.
@@ -542,6 +545,7 @@ def start_span(job: dict, index: int, nudge: str = "") -> dict:
         "job_id": job["id"],
         "index": index,
         "messages": messages,  # kept so the page can show what was actually sent
+        "started": time.monotonic(),
         "text": "",
         "reasoning": "",
         "finish_reason": None,
@@ -573,6 +577,45 @@ def start_span(job: dict, index: int, nudge: str = "") -> dict:
     return run
 
 
+def _log_span(job: dict, run: dict, span: dict) -> None:
+    """Append one span attempt to $THAUM_LOG_DIR/editing.jsonl, if that is set.
+
+    One line per generation, carrying the numbers that turn "it seems slow" or
+    "it went wrong" into something measurable: how big the prompt was, how long
+    it took, and how far the reply drifted. Never raises — diagnostics must not
+    be able to break a run.
+    """
+    directory = log_dir()
+    if directory is None:
+        return
+    try:
+        prompt = "".join(m["content"] for m in run.get("messages", []))
+        elapsed = max(0.0, time.monotonic() - run.get("started", time.monotonic()))
+        out = span["rewritten"]
+        record = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "job": job.get("id"),
+            "span": run["index"],
+            "attempt": span["attempts"],
+            "seconds": round(elapsed, 1),
+            "prompt_msgs": len(run.get("messages", [])),
+            "prompt_tok_est": est_tokens(prompt),
+            "overlap_tok": job.get("budgets", {}).get("overlap"),
+            "span_chars": len(span["original"]),
+            "out_chars": len(out),
+            "out_tok_per_s": round(est_tokens(out) / elapsed, 1) if elapsed else None,
+            "finish": span["finish_reason"],
+            "flags": span["flags"],
+            "drawn_from_source": round(drawn_from_source(span["original"], out), 3),
+            "reaches_end": reaches_end(span["original"], out),
+            "error": run.get("error"),
+        }
+        with (directory / "editing.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except (OSError, KeyError, TypeError, ValueError):
+        pass
+
+
 def record_result(job: dict, run: dict) -> dict:
     """Fold a finished run into its span and persist the job."""
     span = job["spans"][run["index"]]
@@ -583,6 +626,7 @@ def record_result(job: dict, run: dict) -> dict:
         span["flags"] = ["error"]
         span["rewritten"] = ""
         store.save_job(job)
+        _log_span(job, run, span)
         return span
     text = reattach_edges(span["original"], run["text"])
     flags = check_output(job, run["index"], text, run.get("finish_reason"))
@@ -590,6 +634,7 @@ def record_result(job: dict, run: dict) -> dict:
     span["flags"] = flags
     span["status"] = FLAGGED if flags else PROPOSED
     store.save_job(job)
+    _log_span(job, run, span)
     return span
 
 
