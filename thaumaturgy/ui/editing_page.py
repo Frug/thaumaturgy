@@ -212,9 +212,21 @@ def render():
             return
         finish(run)
 
+    def stop():
+        """Halt the current span, and with it any auto-accept chain."""
+        editing.cancel(page.get("run"))
+
     def finish(run: dict):
         job = page["job"]
         index = run["index"]
+        if run.get("cancelled"):
+            # Discard the partial reply and leave the span undecided, so
+            # resuming re-runs it cleanly instead of half-editing the document.
+            page["run"] = None
+            ui.notify("Stopped. This span is unchanged — press Retry to run it "
+                      "again, or leave the job and come back to it.")
+            review.refresh()
+            return
         span = editing.record_result(job, run)
         page["run"] = None
         if run.get("error"):
@@ -247,6 +259,12 @@ def render():
     # ── Decisions ───────────────────────────────────────────────────────────
     def accept():
         if page["index"] is None or page["run"]:
+            return
+        if not page["job"]["spans"][page["index"]]["rewritten"].strip():
+            # Reachable after a stopped or failed run: accepting here would
+            # substitute nothing for the passage and quietly delete it.
+            ui.notify("There's no rewrite to accept — press Retry, or Keep "
+                      "original to leave this passage alone.", type="warning")
             return
         editing.decide(page["job"], page["index"], editing.ACCEPTED)
         job_list.refresh()
@@ -424,6 +442,11 @@ def render():
                 .props(f"flat color=secondary {'disable' if running else ''}")
             ui.button("Retry", icon="refresh", on_click=retry) \
                 .props(f"flat color=secondary {'disable' if running else ''}")
+            if running:
+                ui.button("Stop", icon="stop", on_click=stop) \
+                    .props("color=negative unelevated").classes("text-xs") \
+                    .tooltip("Halt this span. Nothing is written, and any "
+                             "auto-accept run stops here.")
             # Read-only, so it stays available mid-generation.
             ui.button("Show prompt", icon="code", on_click=show_prompt) \
                 .props("flat color=secondary").classes("text-xs")

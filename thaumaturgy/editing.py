@@ -550,6 +550,7 @@ def start_span(job: dict, index: int, nudge: str = "") -> dict:
         "reasoning": "",
         "finish_reason": None,
         "done": False,
+        "cancelled": False,
         "error": None,
     }
     appstate.state.editing = run
@@ -557,6 +558,11 @@ def start_span(job: dict, index: int, nudge: str = "") -> dict:
     def worker():
         try:
             for event in engine.server.stream_chat(messages, params):
+                if run["cancelled"]:
+                    # Leaving the generator closes the streaming response, which
+                    # drops the connection and frees llama.cpp's slot rather than
+                    # letting it finish a reply nobody is waiting for.
+                    break
                 kind = event.get("type")
                 if kind == "finish":
                     run["finish_reason"] = event.get("reason")
@@ -575,6 +581,12 @@ def start_span(job: dict, index: int, nudge: str = "") -> dict:
 
     threading.Thread(target=worker, daemon=True).start()
     return run
+
+
+def cancel(run: dict | None) -> None:
+    """Ask an in-flight span run to stop at the next streamed token."""
+    if run is not None and not run.get("done"):
+        run["cancelled"] = True
 
 
 def _log_span(job: dict, run: dict, span: dict) -> None:
