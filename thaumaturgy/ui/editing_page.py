@@ -1,14 +1,16 @@
 """Editing page — walk a long document past the model one span at a time.
 
-All loop and prompt logic lives in thaumaturgy.editing; this module only shows
-it and collects the accept/reject decisions.
+Rendering only. The service owns the job, the run, and the rules; this module
+shows what it reports and collects decisions.
 """
 
 import asyncio
 
 from nicegui import ui
 
-from thaumaturgy import appstate, editing, engine, store
+from thaumaturgy import appstate, engine, store
+from thaumaturgy.editing import Instructions, Settings, Status, Step, editor
+from thaumaturgy.editing.spans import est_tokens
 
 FLAG_TEXT = {
     "truncated": "Reply hit the token cap",
@@ -22,27 +24,67 @@ FLAG_TEXT = {
     "error": "Generation failed",
 }
 
-# A span that keeps truncating is halved and retried; past this many attempts,
-# stop splitting and hand it to the reviewer rather than shrinking forever.
-MAX_AUTO_SPLITS = 4
+NOTIFY_KIND = {Step.BLOCKED: "warning", Step.ERROR: "negative"}
+ROLE_COLOR = {"system": "purple", "user": "primary", "assistant": "teal"}
+
+_DECIDED = (str(Status.ACCEPTED), str(Status.ORIGINAL))
 
 
-def _percent(job: dict) -> int:
-    done, total = editing.progress(job)
+def _stored_percent(raw: dict) -> int:
+    """Progress of a job on disk, without loading its whole document."""
+    spans = raw.get("spans") or []
+    if not spans:
+        return 0
+    done = sum(s["end"] - s["start"] for s in spans if s.get("status") in _DECIDED)
+    total = spans[-1]["end"] - spans[0]["start"]
     return round(done / total * 100) if total else 0
-
-
-def _rel(job: dict) -> str:
-    done, total = editing.progress(job)
-    return f"{_percent(job)}% · {done:,} of {total:,} chars"
 
 
 def render():
     """Build the Editing page inside the current layout container."""
-    page: dict = {"job": None, "index": None, "run": None, "task": None}
+    page: dict = {"nudge": "", "stream_box": None, "watching": False}
 
-    def job_settings() -> dict:
-        return editing.normalize_settings((page["job"] or {}).get("settings"))
+    # ── Outcome rendering ───────────────────────────────────────────────────
+    def show(outcome) -> None:
+        """Render whatever the service just did, and watch any run it started."""
+        if outcome.message:
+            kind = NOTIFY_KIND.get(outcome.step)
+            ui.notify(outcome.message, type=kind) if kind else ui.notify(outcome.message)
+        job_list.refresh()
+        show_panels()
+        watch()
+
+    def watch() -> None:
+        if editor.running and not page["watching"]:
+            asyncio.create_task(observe())
+
+    async def observe() -> None:
+        """Mirror runs into the page until the service stops starting them.
+
+        Loops rather than handling one run: the service chains spans itself on
+        split-retry and auto-accept.
+        """
+        page["watching"] = True
+        try:
+            while editor.running:
+                run = editor.run
+                last = None
+                while not run.done:
+                    await asyncio.sleep(0.15)
+                    box = page["stream_box"]
+                    if box is None or box.is_deleted:
+                        return  # page gone; the run survives on the service
+                    if run.text != last:
+                        last = run.text
+                        box.set_content(f"```\n{run.text}\n```")
+                outcome = editor.complete_run()
+                if outcome.message:
+                    kind = NOTIFY_KIND.get(outcome.step)
+                    ui.notify(outcome.message, type=kind) if kind else ui.notify(outcome.message)
+                job_list.refresh()
+                review.refresh()
+        finally:
+            page["watching"] = False
 
     # ── Warnings ────────────────────────────────────────────────────────────
     @ui.refreshable
@@ -71,28 +113,28 @@ def render():
             ui.label("No documents yet — click New.").classes("text-muted text-sm p-3")
             return
         with ui.list().classes("w-full"):
-            for j in jobs:
-                active = page["job"] and page["job"]["id"] == j["id"]
-                item = ui.item(on_click=lambda jid=j["id"]: open_job(jid)) \
+            for raw in jobs:
+                active = editor.job is not None and editor.job.id == raw["id"]
+                item = ui.item(on_click=lambda jid=raw["id"]: open_job(jid)) \
                     .props("dense").classes("tg-nav-item w-full")
                 if active:
                     item.classes("tg-active")
                 with item, ui.item_section().classes("min-w-0"):
-                    ui.label(j.get("title") or "Untitled") \
+                    ui.label(raw.get("title") or "Untitled") \
                         .classes("font-medium text-sm ellipsis w-full")
-                    ui.label(f"{_percent(j)}% edited").classes("text-xs text-muted")
+                    ui.label(f"{_stored_percent(raw)}% edited").classes("text-xs text-muted")
                 with item, ui.item_section().props("side"):
                     ui.button(icon="delete",
-                              on_click=lambda jid=j["id"]: remove_job(jid)) \
+                              on_click=lambda jid=raw["id"]: remove_job(jid)) \
                         .props("flat round dense size=sm").tooltip("Delete document")
 
     def remove_job(job_id: str):
-        if page["run"] and not page["run"]["done"]:
+        if editor.running:
             ui.notify("Wait for the current span to finish.", type="warning")
             return
         store.delete_job(job_id)
-        if page["job"] and page["job"]["id"] == job_id:
-            page.update(job=None, index=None, run=None)
+        if editor.job is not None and editor.job.id == job_id:
+            editor.close()
         job_list.refresh()
         show_panels()
 
@@ -117,188 +159,58 @@ def render():
         ui.notify("That file type isn't accepted — use a .txt or .md file.",
                   type="warning")
 
-    def create_job():
-        text = doc_box.value or ""
-        if not text.strip():
-            ui.notify("Paste or upload a document first.", type="warning")
-            return
-        settings = editing.normalize_settings({
+    def form_settings() -> Settings:
+        return Settings.from_dict({
             "max_new_tokens": max_new.value,
             "temperature": temperature.value,
             "response_buffer": buffer_box.value,
             "overlap_pct": (overlap.value or 0) / 100.0,
             "auto_accept_clean": auto_accept.value,
             "allow_deletions": allow_deletions.value,
-            "passage_instruction": instruction_box.value or "",
-            "context_framing": framing_box.value or "",
-            "primed_reply": primed_box.value or "",
-            "prime_reply": prime_reply.value,
         })
-        job = editing.create(title_box.value or "Untitled document", text,
-                             system_box.value or editing.DEFAULT_SYSTEM_PROMPT,
-                             settings)
-        page.update(job=job, index=None, run=None)
-        job_list.refresh()
-        show_panels()
-        resume()
 
-    # ── Job open / resume ───────────────────────────────────────────────────
+    def form_instructions() -> Instructions:
+        return Instructions.from_dict(current_instructions())
+
+    def create_job():
+        text = doc_box.value or ""
+        if not text.strip():
+            ui.notify("Paste or upload a document first.", type="warning")
+            return
+        show(editor.create(title_box.value or "Untitled document", text,
+                            form_instructions(), form_settings()))
+
     def open_job(job_id: str):
-        if page["run"] and not page["run"]["done"]:
+        if editor.running:
             ui.notify("Wait for the current span to finish.", type="warning")
             return
-        job = store.load_job(job_id)
-        if job is None:
-            ui.notify("That document could not be loaded.", type="negative")
-            job_list.refresh()
-            return
-        page.update(job=editing.prepare(job), index=None, run=None)
-        job_list.refresh()
-        show_panels()
-        resume()
-
-    def resume():
-        """Pick up at the first span that still needs a decision."""
-        job = page["job"]
-        if job is None:
-            return
-        index = editing.next_pending(job)
-        if index is None:
-            page["index"] = None
-            review.refresh()
-            return
-        span = job["spans"][index]
-        if span["status"] in (editing.PROPOSED, editing.FLAGGED) and span["rewritten"]:
-            page["index"] = index  # already generated, just never decided
-            review.refresh()
-            return
-        begin(index)
-
-    def begin(index: int, nudge: str = ""):
-        job = page["job"]
-        if job is None:
-            return
-        if not engine.server.running:
-            ui.notify("Load a model on the Model page first.", type="negative")
-            return
-        if editing.busy():
-            ui.notify("The model is busy — wait for the current generation.",
-                      type="warning")
-            return
-        # Packing sizes spans by character estimate, so a dense one can come out
-        # over the reply cap; splitting now is cheaper than a wasted generation.
-        if editing.oversized(job, index) and editing.split_span(job, index):
-            store.save_job(job)
-        page["index"] = index
-        page["run"] = editing.start_span(job, index, nudge)
-        # Outlives the run, so "show prompt" reports what was sent rather than
-        # rebuilding it from state that may have moved on since.
-        page["sent"] = (index, page["run"]["messages"])
-        review.refresh()
-        page["task"] = asyncio.create_task(observe(page["run"]))
-
-    async def observe(run: dict):
-        """Mirror a span run into the page until it finishes."""
-        last = None
-        while not run["done"]:
-            await asyncio.sleep(0.15)
-            box = page.get("stream_box")
-            if page["run"] is not run or box is None or box.is_deleted:
-                return
-            if run["text"] != last:
-                last = run["text"]
-                box.set_content(f"```\n{run['text']}\n```")
-        box = page.get("stream_box")
-        if page["run"] is not run or box is None or box.is_deleted:
-            return
-        finish(run)
-
-    def stop():
-        """Halt the current span, and with it any auto-accept chain."""
-        editing.cancel(page.get("run"))
-
-    def finish(run: dict):
-        job = page["job"]
-        index = run["index"]
-        if run.get("cancelled"):
-            # Discard the partial reply and leave the span undecided, so
-            # resuming re-runs it cleanly instead of half-editing the document.
-            page["run"] = None
-            ui.notify("Stopped. This span is unchanged — press Retry to run it "
-                      "again, or leave the job and come back to it.")
-            review.refresh()
-            return
-        span = editing.record_result(job, run)
-        page["run"] = None
-        if run.get("error"):
-            ui.notify(f"Generation error: {run['error']}", type="negative")
-            review.refresh()
-            return
-        if ("truncated" in span["flags"] and span["attempts"] <= MAX_AUTO_SPLITS
-                and editing.split_span(job, index)):
-            store.save_job(job)
-            ui.notify("Span was too long for one reply — split and retrying.")
-            begin(index)
-            return
-        if not span["flags"] and job_settings()["auto_accept_clean"]:
-            editing.decide(job, index, editing.ACCEPTED)
-            job_list.refresh()
-            advance()
-            return
-        review.refresh()
-
-    def advance():
-        job = page["job"]
-        index = editing.next_pending(job, page["index"] if page["index"] is not None else -1)
-        if index is None:
-            page["index"] = None
-            job_list.refresh()
-            review.refresh()
-            return
-        begin(index)
+        show(editor.open(job_id))
 
     # ── Decisions ───────────────────────────────────────────────────────────
     def accept():
-        if page["index"] is None or page["run"]:
-            return
-        if not page["job"]["spans"][page["index"]]["rewritten"].strip():
-            # Reachable after a stopped or failed run: accepting here would
-            # substitute nothing for the passage and quietly delete it.
-            ui.notify("There's no rewrite to accept — press Retry, or Keep "
-                      "original to leave this passage alone.", type="warning")
-            return
-        editing.decide(page["job"], page["index"], editing.ACCEPTED)
-        job_list.refresh()
-        advance()
+        show(editor.accept())
 
     def keep_original():
-        if page["index"] is None or page["run"]:
-            return
-        editing.decide(page["job"], page["index"], editing.ORIGINAL)
-        job_list.refresh()
-        advance()
+        show(editor.keep_original())
 
     def retry():
-        if page["index"] is None or page["run"]:
-            return
-        begin(page["index"], page.get("nudge", ""))
+        show(editor.retry(page["nudge"]))
+
+    def stop():
+        editor.stop()
 
     def open_edit():
-        if page["index"] is None or page["run"]:
+        span = editor.span
+        if span is None or editor.running:
             return
-        edit_area.value = page["job"]["spans"][page["index"]]["rewritten"]
+        edit_area.value = span.rewritten
         edit_dialog.open()
 
     def save_edit():
-        text = edit_area.value or ""
-        if not text.strip():
-            ui.notify("The rewrite can't be empty — use Keep original instead.",
-                      type="warning")
-            return
-        editing.decide(page["job"], page["index"], editing.ACCEPTED, text)
-        edit_dialog.close()
-        job_list.refresh()
-        advance()
+        outcome = editor.accept(edit_area.value or "")
+        if outcome.step is not Step.BLOCKED:
+            edit_dialog.close()
+        show(outcome)
 
     def restart_job():
         """Back to the intake form with this job's settings, to run it again.
@@ -306,38 +218,33 @@ def render():
         Non-destructive: pressing Start editing makes a new job from the
         original document, and the one being restarted keeps its decisions.
         """
-        job = page["job"]
+        job = editor.job
         if job is None:
             return
-        if page["run"] and not page["run"]["done"]:
+        if editor.running:
             ui.notify("Stop the current span first.", type="warning")
             return
-        s = editing.normalize_settings(job.get("settings"))
-        title_box.value = job.get("title") or ""
-        doc_box.value = job.get("source_text") or ""
-        system_box.value = job.get("system_prompt") or ""
-        max_new.value = s["max_new_tokens"]
-        buffer_box.value = s["response_buffer"]
-        overlap.value = round(s["overlap_pct"] * 100)
-        temperature.value = s["temperature"]
-        auto_accept.value = s["auto_accept_clean"]
-        allow_deletions.value = s["allow_deletions"]
-        instruction_box.value = s["passage_instruction"]
-        framing_box.value = s["context_framing"]
-        primed_box.value = s["primed_reply"]
-        prime_reply.value = s["prime_reply"]
-        page.update(job=None, index=None, run=None)
+        s, instr = job.settings, job.instructions
+        title_box.value = job.title
+        doc_box.value = job.source_text
+        max_new.value = s.max_new_tokens
+        buffer_box.value = s.response_buffer
+        overlap.value = round(s.overlap_pct * 100)
+        temperature.value = s.temperature
+        auto_accept.value = s.auto_accept_clean
+        allow_deletions.value = s.allow_deletions
+        apply_instructions(instr.to_dict())
+        editor.close()
         job_list.refresh()
         show_panels()
         ui.notify("Loaded this job's document and settings. Adjust anything, "
                   "then press Start editing — the old job is left as it is.")
 
     def export():
-        job = page["job"]
+        job = editor.job
         if job is None:
             return
-        ui.download.content(editing.assemble(job),
-                            f"{job.get('title') or 'document'}-edited.txt")
+        ui.download.content(editor.export_text(), f"{job.title or 'document'}-edited.txt")
 
     with ui.dialog() as edit_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:820px;max-width:94vw"):
@@ -364,21 +271,21 @@ def render():
         }
 
     def apply_instructions(vals: dict) -> None:
-        v = editing.normalize_instructions(vals)
-        system_box.value = v["system_prompt"]
-        instruction_box.value = v["passage_instruction"]
-        framing_box.value = v["context_framing"]
-        primed_box.value = v["primed_reply"]
-        prime_reply.value = v["prime_reply"]
+        v = Instructions.from_dict(vals)
+        system_box.value = v.system_prompt
+        instruction_box.value = v.passage_instruction
+        framing_box.value = v.context_framing
+        primed_box.value = v.primed_reply
+        prime_reply.value = v.prime_reply
 
     def refresh_saved(select_name: str | None = None) -> None:
         sets = store.load_edit_prompts()
         if not sets:
-            sets = {"Copy edit": editing.default_instructions()}
+            sets = {"Copy edit": Instructions().to_dict()}
             store.save_edit_prompts(sets)
         names = sorted(sets)
         # Rebuilding the list moves `value`, which fires the change handler and
-        # would overwrite whatever is in the fields. Only a real pick should load.
+        # would overwrite the fields. Only a real pick should load.
         picking["suppress"] = True
         try:
             saved_select.options = names
@@ -442,8 +349,7 @@ def render():
             ui.button("Save", icon="save", on_click=do_save) \
                 .props("color=positive unelevated")
 
-    ROLE_COLOR = {"system": "purple", "user": "primary", "assistant": "teal"}
-
+    # ── Prompt inspector ────────────────────────────────────────────────────
     with ui.dialog() as prompt_dialog, ui.card().classes("p-5 gap-2") \
             .style("width:1000px;max-width:96vw"):
         ui.label("Prompt for this span").classes("text-lg font-semibold")
@@ -454,37 +360,26 @@ def render():
                       on_click=lambda: copy_prompt()).props("flat")
             ui.button("Close", on_click=prompt_dialog.close).props("flat")
 
-    def current_messages():
-        """The messages for the open span — as sent, if this span has been run."""
-        job, index = page["job"], page["index"]
-        if job is None or index is None:
-            return None, False
-        sent = page.get("sent")
-        if sent and sent[0] == index:
-            return sent[1], True
-        return editing.build_messages(job, index, page.get("nudge", "")), False
-
     def copy_prompt():
-        messages, _ = current_messages()
+        messages, _ = editor.prompt_messages()
         if not messages:
             return
-        text = "\n\n".join(f"===== {m['role'].upper()} =====\n{m['content']}"
-                           for m in messages)
-        ui.clipboard.write(text)
+        ui.clipboard.write("\n\n".join(
+            f"===== {m['role'].upper()} =====\n{m['content']}" for m in messages))
         ui.notify("Prompt copied.")
 
     def show_prompt():
-        messages, as_sent = current_messages()
-        if not messages:
+        messages, as_sent = editor.prompt_messages()
+        span = editor.span
+        if not messages or span is None:
             return
         chars = sum(len(m["content"]) for m in messages)
-        target = page["job"]["spans"][page["index"]]["original"]
         prompt_summary.text = (
             f"{'as sent' if as_sent else 'as it would be sent now'} · "
             f"{len(messages)} messages · {chars:,} chars "
-            f"(≈{editing.est_tokens(''.join(m['content'] for m in messages)):,} tok) · "
-            f"passage {len(target):,} chars · "
-            f"context {chars - len(target):,} chars"
+            f"(≈{est_tokens(''.join(m['content'] for m in messages)):,} tok) · "
+            f"passage {len(span.original):,} chars · "
+            f"context {chars - len(span.original):,} chars"
         )
         prompt_scroll.clear()
         with prompt_scroll:
@@ -504,16 +399,16 @@ def render():
     # ── Review panel ────────────────────────────────────────────────────────
     @ui.refreshable
     def review():
-        job = page["job"]
+        job = editor.job
         if job is None:
             return
-        done, total = editing.progress(job)
-        index = page["index"]
+        done, total = job.progress()
 
         with ui.row().classes("w-full items-center gap-3 no-wrap"):
-            ui.label(job.get("title") or "Untitled").classes("text-lg font-semibold")
+            ui.label(job.title or "Untitled").classes("text-lg font-semibold")
             ui.space()
-            ui.label(_rel(job)).classes("text-sm text-muted font-mono")
+            ui.label(f"{job.percent()}% · {done:,} of {total:,} chars") \
+                .classes("text-sm text-muted font-mono")
             ui.button("Restart", icon="restart_alt", on_click=restart_job) \
                 .props("flat dense color=secondary").classes("text-xs") \
                 .tooltip("Reopen the new-job form with this document and "
@@ -524,13 +419,15 @@ def render():
         ui.linear_progress(value=(done / total) if total else 0.0, show_value=False) \
             .props("rounded size=8px").classes("w-full")
 
-        b = job["budgets"]
-        ui.label(
-            f"span target {b['span_target']} tok · overlap {b['overlap']} tok "
-            f"each side · prompt ≈ {b['span_target'] * 2 + b['overlap'] * 2} tok"
-        ).classes("text-xs text-muted font-mono")
+        b = job.budgets
+        if b is not None:
+            ui.label(
+                f"span target {b.span_target} tok · overlap {b.overlap} tok "
+                f"each side · prompt ≈ {b.span_target * 2 + b.overlap * 2} tok"
+            ).classes("text-xs text-muted font-mono")
 
-        if index is None:
+        span = editor.span
+        if span is None:
             with ui.column().classes("w-full items-center justify-center gap-2 p-8"):
                 ui.icon("task_alt").classes("text-5xl text-positive")
                 ui.label("Every span has been decided.").classes("text-muted")
@@ -538,41 +435,40 @@ def render():
                     .props("color=positive unelevated")
             return
 
-        span = job["spans"][index]
-        running = page["run"] is not None
+        running = editor.running
         with ui.row().classes("w-full items-center gap-2"):
-            ui.badge(f"span {index + 1} of {len(job['spans'])}") \
+            ui.badge(f"span {editor.index + 1} of {len(job.spans)}") \
                 .props("color=secondary").classes("font-mono text-[11px]") \
                 .tooltip("A live count — a span whose reply hits the token cap "
                          "is split in two and retried, so the total grows. The "
                          "percentage above is measured against the document.")
-            for flag in span["flags"]:
+            for flag in span.flags:
                 ui.badge(FLAG_TEXT.get(flag, flag)).props("color=warning text-color=dark") \
                     .classes("text-[11px]")
-            if span["attempts"] > 1:
-                ui.badge(f"attempt {span['attempts']}").props("outline color=grey") \
+            if span.attempts > 1:
+                ui.badge(f"attempt {span.attempts}").props("outline color=grey") \
                     .classes("text-[11px]")
 
         with ui.row().classes("w-full gap-3 no-wrap items-stretch"):
             with ui.column().classes("flex-1 min-w-0 gap-1"):
                 ui.label("ORIGINAL").classes("text-xs text-muted tracking-wide")
-                ui.markdown(f"```\n{span['original']}\n```") \
+                ui.markdown(f"```\n{span.original}\n```") \
                     .classes("w-full text-sm tg-span-box")
             with ui.column().classes("flex-1 min-w-0 gap-1"):
                 ui.label("REWRITE").classes("text-xs text-muted tracking-wide")
-                shown = page["run"]["text"] if running and page["run"] else span["rewritten"]
-                page["stream_box"] = ui.markdown(f"```\n{shown}\n```") \
+                page["stream_box"] = ui.markdown(f"```\n{editor.live_text()}\n```") \
                     .classes("w-full text-sm tg-span-box")
 
+        disabled = "disable" if running else ""
         with ui.row().classes("w-full gap-2 items-center"):
             ui.button("Accept", icon="check", on_click=accept) \
-                .props(f"color=positive unelevated {'disable' if running else ''}")
+                .props(f"color=positive unelevated {disabled}")
             ui.button("Edit", icon="edit", on_click=open_edit) \
-                .props(f"flat color=primary {'disable' if running else ''}")
+                .props(f"flat color=primary {disabled}")
             ui.button("Keep original", icon="undo", on_click=keep_original) \
-                .props(f"flat color=secondary {'disable' if running else ''}")
+                .props(f"flat color=secondary {disabled}")
             ui.button("Retry", icon="refresh", on_click=retry) \
-                .props(f"flat color=secondary {'disable' if running else ''}")
+                .props(f"flat color=secondary {disabled}")
             if running:
                 ui.button("Stop", icon="stop", on_click=stop) \
                     .props("color=negative unelevated").classes("text-xs") \
@@ -583,24 +479,23 @@ def render():
                 .props("flat color=secondary").classes("text-xs")
             ui.space()
             ui.label("running…" if running else "").classes("text-xs text-muted")
-        ui.input("Retry instruction (optional)",
-                 value=page.get("nudge", ""),
+        ui.input("Retry instruction (optional)", value=page["nudge"],
                  on_change=lambda e: page.update(nudge=e.value)) \
             .props("filled dense").classes("w-full tg-field")
 
     # ── Layout ──────────────────────────────────────────────────────────────
     def show_panels():
-        has_job = page["job"] is not None
+        has_job = editor.job is not None
         review_card.set_visibility(has_job)
         intake_card.set_visibility(not has_job)
         if has_job:
             review.refresh()
 
     def new_document():
-        if page["run"] and not page["run"]["done"]:
+        if editor.running:
             ui.notify("Wait for the current span to finish.", type="warning")
             return
-        page.update(job=None, index=None, run=None)
+        editor.close()
         job_list.refresh()
         show_panels()
 
@@ -636,7 +531,7 @@ def render():
                         .props("flat round dense color=negative") \
                         .tooltip("Delete the selected instruction set")
                 system_box = ui.textarea("Editing instructions",
-                                         value=editing.DEFAULT_SYSTEM_PROMPT) \
+                                         value=Instructions().system_prompt) \
                     .props('filled input-style="height:120px"').classes("w-full tg-field")
                 with ui.row().classes("w-full gap-3 items-end no-wrap"):
                     max_new = ui.number("Max new tokens", value=700, min=64, max=4096,
@@ -655,8 +550,7 @@ def render():
                                             step=0.05).props("filled") \
                         .classes("flex-1 tg-field")
                 # Every word the tool puts around the passage, laid out to be
-                # edited or emptied — it competes with the system prompt above,
-                # so it should not be something only the code knows about.
+                # edited or emptied — it competes with the system prompt above.
                 with ui.expansion("Prompt wrapper — text added around your passage") \
                         .classes("w-full").props("dense"):
                     ui.label(
@@ -667,18 +561,18 @@ def render():
                     ).classes("text-xs text-muted mb-2")
                     instruction_box = ui.textarea(
                         "Passage instruction",
-                        value=editing.DEFAULT_PASSAGE_INSTRUCTION) \
+                        value=Instructions().passage_instruction) \
                         .props('filled input-style="height:90px"') \
                         .classes("w-full tg-field")
                     framing_box = ui.textarea(
                         "Context framing (only used when Overlap % is above 0)",
-                        value=editing.DEFAULT_CONTEXT_FRAMING) \
+                        value=Instructions().context_framing) \
                         .props('filled input-style="height:120px"') \
                         .classes("w-full tg-field")
                     prime_reply = ui.switch(
                         "Add a reply spoken as the model, before the passage")
                     primed_box = ui.textarea(
-                        "Primed reply", value=editing.DEFAULT_PRIMED_REPLY) \
+                        "Primed reply", value=Instructions().primed_reply) \
                         .props('filled input-style="height:70px"') \
                         .classes("w-full tg-field")
                     primed_box.bind_visibility_from(prime_reply, "value")
@@ -696,3 +590,4 @@ def render():
 
     refresh_saved()  # also seeds a starting set on first run
     show_panels()
+    watch()  # a run may already be in flight from before this page was opened

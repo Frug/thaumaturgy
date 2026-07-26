@@ -38,7 +38,7 @@ def _pidfile() -> Path:
     return sub_dir("cache") / "llama_server.pid"
 
 
-def _reap_stale() -> None:
+def reap_stale() -> None:
     """Kill a llama-server orphaned by a previous app instance.
 
     Hot reload recreates the LlamaServer singleton with an empty handle while
@@ -586,6 +586,5 @@ class LlamaServer:
                    "limit": self._token_limit()}
 
 
-_reap_stale()  # clean up a llama-server orphaned by a previous (reloaded) instance
 server = LlamaServer()
 atexit.register(server.stop)

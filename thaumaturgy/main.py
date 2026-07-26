@@ -6,9 +6,14 @@ from contextlib import contextmanager
 
 from nicegui import ui
 
-from thaumaturgy import theme
+from thaumaturgy import engine, theme
 from thaumaturgy.ui import (chat_page, editing_page, model_page, nav,
                             scenarios_page, settings_page)
+
+# Clean up a llama-server orphaned by a previous (reloaded) instance. Done from
+# the entrypoint, not on importing engine: a test or a script that merely
+# imports the package would otherwise kill whatever model is loaded.
+engine.reap_stale()
 
 ui.add_head_html(theme.head_html(), shared=True)
 
