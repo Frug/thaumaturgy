@@ -6,9 +6,10 @@ checks are plain assertions over pure functions, so a runner is all it needs.
 
 import sys
 
-from tests import harness, test_job, test_prompt, test_spans, test_validator
+from tests import (harness, test_chat, test_job, test_prompt, test_spans,
+                   test_validator)
 
-MODULES = (test_spans, test_validator, test_prompt, test_job)
+MODULES = (test_spans, test_validator, test_prompt, test_job, test_chat)
 
 
 def main() -> int:
