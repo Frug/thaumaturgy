@@ -202,6 +202,32 @@ def delete_job(job_id: str) -> None:
     _job_path(job_id).unlink(missing_ok=True)
 
 
+# ── Editing instruction sets (one file: <data>/editing_prompts.yaml) ────────
+# The prompt text for an editing job — the author's own instructions plus the
+# wrapper the page puts around each passage. Kept apart from a job so a set of
+# instructions that works can be reused on the next document. Deliberately dumb
+# here: the defaults live with the code that uses them, in thaumaturgy.editing.
+
+def _edit_prompts_path() -> Path:
+    return data_dir() / "editing_prompts.yaml"
+
+
+def load_edit_prompts() -> dict:
+    """Saved instruction sets by name; empty on first run or a bad file."""
+    try:
+        doc = yaml.safe_load(_edit_prompts_path().read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return {}
+    sets = _as_mapping(_as_mapping(doc).get("sets"))
+    return {name: _as_mapping(vals) for name, vals in sets.items()
+            if isinstance(name, str) and name.strip()}
+
+
+def save_edit_prompts(sets: dict) -> None:
+    _write_atomic(_edit_prompts_path(),
+                  yaml.safe_dump({"sets": sets}, sort_keys=True, allow_unicode=True))
+
+
 # ── App config ──────────────────────────────────────────────────────────────
 
 def load_app_config() -> dict:

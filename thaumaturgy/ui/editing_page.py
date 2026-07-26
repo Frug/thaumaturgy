@@ -317,6 +317,89 @@ def render():
             ui.button("Save & accept", icon="check", on_click=save_edit) \
                 .props("color=primary unelevated")
 
+    # ── Saved instruction sets ──────────────────────────────────────────────
+    # The prompt text is the part worth carrying between documents; the token
+    # sizes belong to the document and the model, so they stay with the job.
+    def current_instructions() -> dict:
+        return {
+            "system_prompt": system_box.value or "",
+            "passage_instruction": instruction_box.value or "",
+            "context_framing": framing_box.value or "",
+            "primed_reply": primed_box.value or "",
+            "prime_reply": bool(prime_reply.value),
+        }
+
+    def apply_instructions(vals: dict) -> None:
+        v = editing.normalize_instructions(vals)
+        system_box.value = v["system_prompt"]
+        instruction_box.value = v["passage_instruction"]
+        framing_box.value = v["context_framing"]
+        primed_box.value = v["primed_reply"]
+        prime_reply.value = v["prime_reply"]
+
+    def refresh_saved(select_name: str | None = None) -> None:
+        sets = store.load_edit_prompts()
+        if not sets:
+            sets = {"Copy edit": editing.default_instructions()}
+            store.save_edit_prompts(sets)
+        names = sorted(sets)
+        saved_select.options = names
+        if select_name in names:
+            saved_select.value = select_name
+        elif saved_select.value not in names:
+            saved_select.value = names[0] if names else None
+        saved_select.update()
+
+    def load_saved() -> None:
+        sets = store.load_edit_prompts()
+        name = saved_select.value
+        if name not in sets:
+            ui.notify("Pick a saved set first.", type="warning")
+            return
+        apply_instructions(sets[name])
+        ui.notify(f"Loaded “{name}”.")
+
+    def open_save() -> None:
+        save_name.value = saved_select.value or ""
+        save_dialog.open()
+
+    def do_save() -> None:
+        name = (save_name.value or "").strip()
+        if not name:
+            ui.notify("Give the instruction set a name.", type="warning")
+            return
+        sets = store.load_edit_prompts()
+        replacing = name in sets
+        sets[name] = current_instructions()
+        store.save_edit_prompts(sets)
+        save_dialog.close()
+        refresh_saved(name)
+        ui.notify(f"{'Replaced' if replacing else 'Saved'} “{name}”.")
+
+    def delete_saved() -> None:
+        sets = store.load_edit_prompts()
+        name = saved_select.value
+        if name not in sets:
+            return
+        del sets[name]
+        store.save_edit_prompts(sets)
+        refresh_saved(sorted(sets)[0] if sets else None)
+        ui.notify(f"Deleted “{name}”.")
+
+    with ui.dialog() as save_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:460px;max-width:92vw"):
+        ui.label("Save editing instructions").classes("text-lg font-semibold")
+        ui.label("Stores the instructions and the prompt wrapper, ready to load "
+                 "onto the next document. An existing name is overwritten.") \
+            .classes("text-xs text-muted")
+        save_name = ui.input("Name").props("filled autofocus") \
+            .classes("w-full tg-field")
+        save_name.on("keydown.enter", lambda: do_save())
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=save_dialog.close).props("flat")
+            ui.button("Save", icon="save", on_click=do_save) \
+                .props("color=positive unelevated")
+
     ROLE_COLOR = {"system": "purple", "user": "primary", "assistant": "teal"}
 
     with ui.dialog() as prompt_dialog, ui.card().classes("p-5 gap-2") \
@@ -495,6 +578,16 @@ def render():
                     .classes("w-full tg-field")
                 doc_box = ui.textarea("Document") \
                     .props('filled input-style="height:220px"').classes("w-full tg-field")
+                with ui.row().classes("w-full gap-2 items-end no-wrap"):
+                    saved_select = ui.select([], label="Saved instructions") \
+                        .props("filled dense").classes("flex-1 tg-field")
+                    ui.button("Load", icon="download", on_click=lambda: load_saved()) \
+                        .props("flat color=primary").classes("text-xs")
+                    ui.button("Save as…", icon="save", on_click=lambda: open_save()) \
+                        .props("flat color=positive").classes("text-xs")
+                    ui.button(icon="delete", on_click=lambda: delete_saved()) \
+                        .props("flat round dense color=negative") \
+                        .tooltip("Delete the selected instruction set")
                 system_box = ui.textarea("Editing instructions",
                                          value=editing.DEFAULT_SYSTEM_PROMPT) \
                     .props('filled input-style="height:120px"').classes("w-full tg-field")
@@ -554,4 +647,5 @@ def render():
             with review_card:
                 review()
 
+    refresh_saved()  # also seeds a starting set on first run
     show_panels()

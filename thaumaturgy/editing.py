@@ -100,6 +100,36 @@ DEFAULT_SETTINGS = {
 PENDING, PROPOSED, ACCEPTED, ORIGINAL, FLAGGED = (
     "pending", "proposed", "accepted", "original", "flagged")
 
+# What a saved instruction set carries: the author's own prompt, plus the
+# wrapper text that goes around each passage. Not the numeric tuning — that
+# belongs to a document's size and the model, whereas these describe the task
+# and are what's worth carrying to the next document.
+INSTRUCTION_KEYS = ("system_prompt", "passage_instruction", "context_framing",
+                    "primed_reply", "prime_reply")
+
+
+def default_instructions() -> dict:
+    return {
+        "system_prompt": DEFAULT_SYSTEM_PROMPT,
+        "passage_instruction": DEFAULT_PASSAGE_INSTRUCTION,
+        "context_framing": DEFAULT_CONTEXT_FRAMING,
+        "primed_reply": DEFAULT_PRIMED_REPLY,
+        "prime_reply": False,
+    }
+
+
+def normalize_instructions(vals) -> dict:
+    """Coerce a saved set into every key, so a hand-edited file can't break the page."""
+    src = vals if isinstance(vals, dict) else {}
+    out = default_instructions()
+    for key in INSTRUCTION_KEYS:
+        value = src.get(key)
+        if key == "prime_reply":
+            out[key] = bool(value) if value is not None else out[key]
+        elif isinstance(value, str):
+            out[key] = value
+    return out
+
 
 def normalize_settings(vals) -> dict:
     """Coerce anything into a full settings dict; the job files are editable."""
