@@ -366,6 +366,10 @@ _ALIGN_BLOCK = 20
 # length check once the job allows deletions, since both just come back short.
 MIN_END_COVERAGE = 0.8
 
+# A reply at least this share of the original's length has not run out early,
+# whatever its ending aligns to.
+MIN_END_LENGTH = 0.9
+
 # Least share of the *output* that must trace back to the original. Measured:
 # a pure deletion scores 1.00 and a light copy edit 0.98, while prose the model
 # invented lands near 0.15 — so this separates invention from removal, which a
@@ -389,6 +393,12 @@ def reaches_end(original: str, text: str) -> bool:
     """
     a, b = _flat(original), _flat(text)
     if len(a) < _BLEED_WINDOW or len(b) < _BLEED_WINDOW:
+        return True
+    # A model that gave up returns a short reply. One that reworded the closing
+    # sentences returns a full-length one that simply stops matching near the
+    # end — indistinguishable by alignment alone, which made heavy tail edits
+    # look like truncation. Require both signals before saying it stopped.
+    if len(b) >= len(a) * MIN_END_LENGTH:
         return True
     # Aligned rather than searched for: hunting the closing words directly finds
     # their *last* occurrence, which in repetitive prose sits at the end however
