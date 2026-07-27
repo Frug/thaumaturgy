@@ -219,10 +219,10 @@ def render():
         ui.notify(f"Loaded {e.file.name} ({len(text):,} characters)")
 
     def reject_upload(_):
-        # Quasar filters on `accept` before uploading; without this the file
-        # just vanishes with no indication of why.
-        ui.notify("That file type isn't accepted — use a .txt or .md file.",
-                  type="warning")
+        # Quasar filters on `accept` and `max-files` before uploading; without
+        # this the file just vanishes with no indication of why.
+        ui.notify("Not accepted — one .txt or .md file at a time. Clear the "
+                  "current file to choose another.", type="warning")
 
     def form_settings() -> Settings:
         return Settings.from_dict({
@@ -581,8 +581,12 @@ def render():
                 title_box = _explain(
                     ui.input("Title").props("filled").classes("w-full tg-field"),
                     HELP["title"])
+                # max_files caps the queue as well as the picker. Without it the
+                # uploader takes file after file, listing them all, while each
+                # one silently replaces the document below.
                 ui.upload(on_upload=take_upload, on_rejected=reject_upload,
-                          auto_upload=True, label="Upload a .txt/.md file") \
+                          auto_upload=True, multiple=False, max_files=1,
+                          label="Upload one .txt/.md file") \
                     .props("flat bordered accept=.txt,.md,.markdown") \
                     .classes("w-full tg-field")
                 doc_box = _explain(
