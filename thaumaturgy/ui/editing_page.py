@@ -30,6 +30,71 @@ ROLE_COLOR = {"system": "purple", "user": "primary", "assistant": "teal"}
 _DECIDED = (str(Status.ACCEPTED), str(Status.ORIGINAL))
 
 
+def _explain(field, text: str):
+    """Hang a hoverable ? inside a field, on the right."""
+    with field.add_slot("append"):
+        ui.icon("help_outline").classes("text-sm text-muted cursor-help").tooltip(text)
+    return field
+
+
+def _switch(label: str, text: str):
+    """A switch with the same ? beside it — QToggle has no append slot."""
+    with ui.row().classes("items-center gap-1 no-wrap"):
+        toggle = ui.switch(label)
+        ui.icon("help_outline").classes("text-sm text-muted cursor-help").tooltip(text)
+    return toggle
+
+
+HELP = {
+    "title": "Name for this job in the sidebar. Defaults to the uploaded "
+             "file's name.",
+    "document": "The text to edit. Paste it here, or upload a .txt/.md file "
+                "above. It is copied into the job, so editing never touches "
+                "your original file.",
+    "saved": "Load a saved set of instructions and prompt wrapper. Picking one "
+             "replaces every prompt field below; Save as… stores the current "
+             "ones under a name.",
+    "system": "Your instructions to the model, sent as the system prompt with "
+              "every passage. This is the main thing to tune — say what may "
+              "change and, just as importantly, what must come back untouched.",
+    "max_new": "Cap on the model's reply for one passage. It also sets how big "
+               "a passage is: passage size = this minus the response buffer. "
+               "Models get unreliable at reproducing text much past ~2,000 "
+               "words, and well before that.",
+    "buffer": "Headroom between the passage size and the reply cap, so a "
+              "passage that grows a little under editing still fits. If spans "
+              "keep hitting the cap and splitting, raise this.",
+    "overlap": "How much surrounding text the model sees either side of the "
+               "passage, as a share of the free context. It buys consistent "
+               "wording across joins, but it is the single biggest cause of a "
+               "model drifting out of its passage — 0 is the most faithful. "
+               "Because it is a share of the loaded context, the same "
+               "percentage means far more text at a large context size.",
+    "temperature": "Sampling randomness. Editing wants near-deterministic "
+                   "output, so keep this low; 0.2 or below.",
+    "instruction": "Wrapped around the passage in the final turn. "
+                   "{first_words} and {last_words} quote the passage's own "
+                   "ends back, which is what stops the model returning only "
+                   "part of it.",
+    "framing": "Introduces the surrounding text when overlap is above 0. "
+               "{before} and {after} are where that text lands.",
+    "prime": "Inserts a reply written as though the model said it, agreeing to "
+             "treat the context as reference only. Models follow their own "
+             "prior turns more readily than instructions, so this measurably "
+             "helps — but it can also override your system prompt, which is "
+             "why it is off by default.",
+    "primed_text": "The words put in the model's mouth. Only sent when the "
+                   "switch above is on, and only when overlap is above 0.",
+    "deletions": "Turn on when you're asking the model to strip content, so a "
+                 "shrinking passage isn't treated as a fault. Invented prose "
+                 "and truncation are still flagged.",
+    "auto_accept": "Accept passages that pass every check and move straight on, "
+                   "stopping only on flagged ones. The checks are mechanical — "
+                   "they catch a mangled passage, not a bad edit — so leave "
+                   "this off until you've watched a few spans.",
+}
+
+
 def _stored_percent(raw: dict) -> int:
     """Progress of a job on disk, without loading its whole document."""
     spans = raw.get("spans") or []
@@ -513,42 +578,47 @@ def render():
             intake_card = ui.card().classes("w-full flex-1 p-5 gap-3 overflow-auto")
             with intake_card:
                 ui.label("New editing job").classes("text-lg font-semibold")
-                title_box = ui.input("Title").props("filled").classes("w-full tg-field")
+                title_box = _explain(
+                    ui.input("Title").props("filled").classes("w-full tg-field"),
+                    HELP["title"])
                 ui.upload(on_upload=take_upload, on_rejected=reject_upload,
                           auto_upload=True, label="Upload a .txt/.md file") \
                     .props("flat bordered accept=.txt,.md,.markdown") \
                     .classes("w-full tg-field")
-                doc_box = ui.textarea("Document") \
-                    .props('filled input-style="height:220px"').classes("w-full tg-field")
+                doc_box = _explain(
+                    ui.textarea("Document")
+                    .props('filled input-style="height:220px"')
+                    .classes("w-full tg-field"), HELP["document"])
                 with ui.row().classes("w-full gap-2 items-end no-wrap"):
-                    saved_select = ui.select(
-                        [], label="Saved instructions",
-                        on_change=lambda e: load_saved(e.value)) \
-                        .props("filled dense").classes("flex-1 tg-field")
+                    saved_select = _explain(
+                        ui.select([], label="Saved instructions",
+                                  on_change=lambda e: load_saved(e.value))
+                        .props("filled dense").classes("flex-1 tg-field"),
+                        HELP["saved"])
                     ui.button("Save as…", icon="save", on_click=lambda: open_save()) \
                         .props("flat color=positive").classes("text-xs")
                     ui.button(icon="delete", on_click=lambda: delete_saved()) \
                         .props("flat round dense color=negative") \
                         .tooltip("Delete the selected instruction set")
-                system_box = ui.textarea("Editing instructions",
-                                         value=Instructions().system_prompt) \
-                    .props('filled input-style="height:120px"').classes("w-full tg-field")
+                system_box = _explain(
+                    ui.textarea("Editing instructions",
+                                value=Instructions().system_prompt)
+                    .props('filled input-style="height:120px"')
+                    .classes("w-full tg-field"), HELP["system"])
                 with ui.row().classes("w-full gap-3 items-end no-wrap"):
-                    max_new = ui.number("Max new tokens", value=700, min=64, max=4096,
-                                        step=1).props("filled").classes("flex-1 tg-field")
-                    buffer_box = ui.number("Response buffer", value=150, min=0, max=2048,
-                                           step=1).props("filled") \
-                        .classes("flex-1 tg-field") \
-                        .tooltip("How far under the reply cap to size each span")
+                    max_new = _explain(
+                        ui.number("Max new tokens", value=700, min=64, max=4096, step=1)
+                        .props("filled").classes("flex-1 tg-field"), HELP["max_new"])
+                    buffer_box = _explain(
+                        ui.number("Response buffer", value=150, min=0, max=2048, step=1)
+                        .props("filled").classes("flex-1 tg-field"), HELP["buffer"])
                 with ui.row().classes("w-full gap-3 items-end no-wrap"):
-                    overlap = ui.number("Overlap %", value=0, min=0, max=45, step=1) \
-                        .props("filled").classes("flex-1 tg-field") \
-                        .tooltip("Surrounding text shown to the model for consistency. "
-                                 "0 is the most faithful — context is the main "
-                                 "cause of a model drifting out of the passage.")
-                    temperature = ui.number("Temperature", value=0.2, min=0, max=2,
-                                            step=0.05).props("filled") \
-                        .classes("flex-1 tg-field")
+                    overlap = _explain(
+                        ui.number("Chunk overlap %", value=0, min=0, max=45, step=1)
+                        .props("filled").classes("flex-1 tg-field"), HELP["overlap"])
+                    temperature = _explain(
+                        ui.number("Temperature", value=0.2, min=0, max=2, step=0.05)
+                        .props("filled").classes("flex-1 tg-field"), HELP["temperature"])
                 # Every word the tool puts around the passage, laid out to be
                 # edited or emptied — it competes with the system prompt above.
                 with ui.expansion("Prompt wrapper — text added around your passage") \
@@ -559,28 +629,29 @@ def render():
                         "they appear; leave a field empty to send nothing. Use "
                         "Show prompt during a run to see the result verbatim."
                     ).classes("text-xs text-muted mb-2")
-                    instruction_box = ui.textarea(
-                        "Passage instruction",
-                        value=Instructions().passage_instruction) \
-                        .props('filled input-style="height:90px"') \
-                        .classes("w-full tg-field")
-                    framing_box = ui.textarea(
-                        "Context framing (only used when Overlap % is above 0)",
-                        value=Instructions().context_framing) \
-                        .props('filled input-style="height:120px"') \
-                        .classes("w-full tg-field")
-                    prime_reply = ui.switch(
-                        "Add a reply spoken as the model, before the passage")
-                    primed_box = ui.textarea(
-                        "Primed reply", value=Instructions().primed_reply) \
-                        .props('filled input-style="height:70px"') \
-                        .classes("w-full tg-field")
+                    instruction_box = _explain(
+                        ui.textarea("Passage instruction",
+                                    value=Instructions().passage_instruction)
+                        .props('filled input-style="height:90px"')
+                        .classes("w-full tg-field"), HELP["instruction"])
+                    framing_box = _explain(
+                        ui.textarea(
+                            "Context framing (only used when Chunk overlap % is "
+                            "above 0)", value=Instructions().context_framing)
+                        .props('filled input-style="height:120px"')
+                        .classes("w-full tg-field"), HELP["framing"])
+                    prime_reply = _switch(
+                        "Add a reply spoken as the model, before the passage",
+                        HELP["prime"])
+                    primed_box = _explain(
+                        ui.textarea("Primed reply", value=Instructions().primed_reply)
+                        .props('filled input-style="height:70px"')
+                        .classes("w-full tg-field"), HELP["primed_text"])
                     primed_box.bind_visibility_from(prime_reply, "value")
-                allow_deletions = ui.switch("Instructions may remove text") \
-                    .tooltip("Turn on when you're asking the model to strip "
-                             "content, so a shrinking span isn't treated as a "
-                             "fault. Invented prose is still flagged.")
-                auto_accept = ui.switch("Auto-accept spans that pass every check")
+                allow_deletions = _switch("Instructions may remove text",
+                                          HELP["deletions"])
+                auto_accept = _switch("Auto-accept spans that pass every check",
+                                      HELP["auto_accept"])
                 ui.button("Start editing", icon="play_arrow", on_click=create_job) \
                     .props("color=primary unelevated")
 
