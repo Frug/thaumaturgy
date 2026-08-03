@@ -7,4 +7,4 @@ start-dev:
 	uv run python -m thaumaturgy.main
 
 test:
-	uv run python -m tests
+	uv run pytest
