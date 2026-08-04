@@ -1,4 +1,4 @@
-"""Settings page — app preferences (data dir, theme, flags).
+"""Settings page: app preferences (data dir, theme, flags).
 
 Content is stubbed for now; the module exists so the route matches the other
 pages (chat / scenarios / model) with a proper render() entrypoint.

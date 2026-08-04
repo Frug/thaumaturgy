@@ -1,10 +1,11 @@
-"""Application chrome — header and left navigation drawer."""
+"""Application chrome: header and left navigation drawer."""
 
 from nicegui import app, ui
 
 NAV: list[tuple[str, str, str]] = [
     ("Chat", "/", "chat"),
     ("Scenarios", "/scenarios", "edit_note"),
+    ("Editing", "/editing", "spellcheck"),
     ("Model", "/model", "memory"),
     ("Settings", "/settings", "settings"),
 ]

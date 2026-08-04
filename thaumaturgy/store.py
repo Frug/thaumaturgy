@@ -15,7 +15,7 @@ def _app_config_path() -> Path:
 
 
 def _as_mapping(value) -> dict:
-    """A dict, or an empty one — these files are hand-editable."""
+    """A dict, or an empty one; these files are hand-editable."""
     return value if isinstance(value, dict) else {}
 
 
@@ -98,7 +98,7 @@ def save_chat(chat: dict) -> None:
     chat["title"] = _title_from(chat.get("messages", []))
     target = _chat_path(chat["id"], chat.get("scenario"))
     # Stale copies only exist right after a chat moves, and this runs twice a
-    # second while streaming — so skip the tree walk once it's settled.
+    # second while streaming, so skip the tree walk once it's settled.
     settled = target.exists()
     if not settled:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +136,96 @@ def list_chats(scenario: str | None = None) -> list[dict]:
 def delete_chat(chat_id: str) -> None:
     for p in _chat_paths(chat_id):
         p.unlink(missing_ok=True)
+
+
+# ── Editing jobs (one JSON file each under <data>/editing/) ─────────────────
+# A job holds the source document, the span decisions made so far, and the
+# settings the run was started with. Saved after every decision so a long run
+# survives a restart.
+
+def editing_dir():
+    return sub_dir("editing")
+
+
+def _job_path(job_id: str) -> Path:
+    return editing_dir() / f"{job_id}.json"
+
+
+def new_job(title: str, source_text: str, system_prompt: str,
+            model: str | None, settings: dict) -> dict:
+    now = time.time()
+    job_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    while _job_path(job_id).exists():
+        now += 1
+        job_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    job = {
+        "id": job_id,
+        "title": title or "Untitled document",
+        "created": now,
+        "updated": now,
+        "model": model,
+        "system_prompt": system_prompt,
+        "settings": dict(settings),
+        "source_text": source_text,
+        "spans": [],
+    }
+    save_job(job)
+    return job
+
+
+def save_job(job: dict) -> None:
+    job["updated"] = time.time()
+    _write_atomic(_job_path(job["id"]),
+                  json.dumps(job, indent=2, ensure_ascii=False))
+
+
+def load_job(job_id: str) -> dict | None:
+    p = _job_path(job_id)
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def list_jobs() -> list[dict]:
+    out = []
+    for p in sorted(editing_dir().glob("*.json")):
+        try:
+            out.append(json.loads(p.read_text(encoding="utf-8")))
+        except (ValueError, OSError):
+            continue
+    out.sort(key=lambda j: j.get("updated", 0), reverse=True)
+    return out
+
+
+def delete_job(job_id: str) -> None:
+    _job_path(job_id).unlink(missing_ok=True)
+
+
+# ── Editing instruction sets (one file: <data>/editing_prompts.yaml) ────────
+# The prompt text for an editing job: the author's own instructions plus the
+# wrapper the page puts around each passage. Kept apart from a job so a set of
+# instructions that works can be reused on the next document. Deliberately dumb
+# here: the defaults live with the code that uses them, in thaumaturgy.editing.
+
+def _edit_prompts_path() -> Path:
+    return data_dir() / "editing_prompts.yaml"
+
+
+def load_edit_prompts() -> dict:
+    """Saved instruction sets by name; empty on first run or a bad file."""
+    try:
+        doc = yaml.safe_load(_edit_prompts_path().read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError):
+        return {}
+    sets = _as_mapping(_as_mapping(doc).get("sets"))
+    return {name: _as_mapping(vals) for name, vals in sets.items()
+            if isinstance(name, str) and name.strip()}
+
+
+def save_edit_prompts(sets: dict) -> None:
+    _write_atomic(_edit_prompts_path(),
+                  yaml.safe_dump({"sets": sets}, sort_keys=True, allow_unicode=True))
 
 
 # ── App config ──────────────────────────────────────────────────────────────
@@ -238,7 +328,7 @@ def delete_scenario(scenario: dict) -> None:
 # ── Parameter sets (persisted as one file: <data>/presets.yaml) ──────────────
 # Kept unified in a single file (not one-per-set) so the whole collection is
 # trivial to gitignore. On first run the file is seeded from BUILTIN_PRESETS;
-# thereafter it's the user's own — edits/renames/deletes all land here.
+# thereafter it's the user's own; edits/renames/deletes all land here.
 
 BUILTIN_PRESETS = {
     "Default": dict(max_new_tokens=512, temperature=0.8, top_p=0.95, top_k=40, min_p=0.05, repetition_penalty=1.10),
@@ -296,7 +386,7 @@ def save_presets(doc: dict) -> None:
 #
 # Each model owns its settings: the values are bounded by model properties
 # (block count, trained context, template), so the same numbers mean something
-# different on another model. Named sets are templates — starting points copied
+# different on another model. Named sets are templates: starting points copied
 # onto a model, not a live binding.
 
 # Injected as the model's own last thought before the forced end-of-thinking

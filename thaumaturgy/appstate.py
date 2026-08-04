@@ -1,6 +1,6 @@
 """Process-global application state (single-user local app).
 
-Kept deliberately simple — a module-level singleton, no UI imports (to avoid
+Kept deliberately simple: a module-level singleton, no UI imports (to avoid
 import cycles). Pages read/write these to coordinate.
 """
 

@@ -3,7 +3,7 @@
 We reuse textgen's approach: spawn a resolved `llama-server` binary as a
 subprocess and talk to it over HTTP. Generation goes through llama-server's
 OpenAI-compatible `/v1/chat/completions` endpoint, so the model's own chat
-template and sampling are handled by llama.cpp — we just pass messages + params.
+template and sampling are handled by llama.cpp; we just pass messages + params.
 
 Single model at a time (one subprocess); matches local single-user use.
 """
@@ -25,7 +25,7 @@ from pathlib import Path
 import requests
 
 from thaumaturgy import appstate, llama_bins, metadata_gguf, store
-from thaumaturgy.paths import sub_dir
+from thaumaturgy.paths import log_dir, sub_dir
 
 SERVER_LOG_LIMIT = 500
 
@@ -38,12 +38,12 @@ def _pidfile() -> Path:
     return sub_dir("cache") / "llama_server.pid"
 
 
-def _reap_stale() -> None:
+def reap_stale() -> None:
     """Kill a llama-server orphaned by a previous app instance.
 
     Hot reload recreates the LlamaServer singleton with an empty handle while
     the old subprocess keeps running (and holding VRAM). We record each server's
-    PID in a file; on startup we terminate a leftover one — but only if the PID
+    PID in a file; on startup we terminate a leftover one, but only if the PID
     is still an actual llama-server, to guard against PID reuse.
     """
     pf = _pidfile()
@@ -87,7 +87,7 @@ def list_models() -> list[str]:
 
 
 def model_files(name: str) -> list[Path]:
-    """Every file backing one model — a whole shard set, or a lone file.
+    """Every file backing one model: a whole shard set, or a lone file.
 
     Removing just the named part of a split model would strand the other parts
     as unloadable orphans, so deletion has to work on the set.
@@ -206,6 +206,23 @@ class LlamaServer:
             return
         with self._log_lock:
             self._log_lines.append(text)
+        self._log_to_file(text)
+
+    def _log_to_file(self, text: str) -> None:
+        """Mirror a line to $THAUM_LOG_DIR/llama-server.log, if that is set.
+
+        Timings and the GPU layer split are printed once and then scroll out of
+        the ring buffer; on disk they survive long enough to diagnose from.
+        Never raises: a full or unwritable disk must not take the server down.
+        """
+        directory = log_dir()
+        if directory is None:
+            return
+        try:
+            with (directory / "llama-server.log").open("a", encoding="utf-8") as fh:
+                fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {text}\n")
+        except OSError:
+            pass
 
     def _capture_output(self, stream) -> None:
         try:
@@ -447,6 +464,27 @@ class LlamaServer:
 
         return self._estimate_tokens(prompt), False
 
+    def count_tokens(self, text: str) -> tuple[int, bool]:
+        """Token count for raw text, with exactness flag.
+
+        Unlike count_chat_tokens this skips the chat template: the editor sizes
+        document spans, which are stretches of prose rather than messages.
+        """
+        if not text:
+            return 0, True
+        if self.running:
+            for payload in ({"content": text, "add_special": False},
+                            {"content": text}):
+                try:
+                    r = requests.post(f"{self.base_url}/tokenize", json=payload, timeout=10)
+                    r.raise_for_status()
+                    count = self._token_count_from_json(r.json())
+                    if count is not None:
+                        return count, True
+                except (requests.RequestException, ValueError, TypeError):
+                    pass
+        return self._estimate_tokens(text), False
+
     def thinking_enabled(self) -> bool:
         """Whether the loaded model is expected to emit reasoning."""
         if self.reasoning == "off":
@@ -460,11 +498,11 @@ class LlamaServer:
             self._read_props()
         return self.chat_template_caps.get("supports_preserve_reasoning") is True
 
-    def _context_limit(self) -> int | None:
+    def context_limit(self) -> int | None:
         """Best estimate of the loaded server's context window.
 
         Prefer /props n_ctx, but that read can fail silently after load, so fall
-        back to the launched -c value and then the model's trained context —
+        back to the launched -c value and then the model's trained context:
         anything to avoid an unbounded generation with no stop button.
         """
         if self.n_ctx:
@@ -479,13 +517,13 @@ class LlamaServer:
         max_tokens bounds thinking and reply together, but the setting means
         reply tokens, so the thinking budget is added to keep the reply's
         allowance whole. An unrestricted budget has no such total, leaving the
-        context window as the only bound — sent explicitly, since omitting the
+        context window as the only bound, sent explicitly, since omitting the
         field gives a runaway generation no stop button.
         """
         if not self.thinking_enabled():
             return max_new_tokens
         if self.reasoning_budget < 0:
-            return self._context_limit()
+            return self.context_limit()
         return max_new_tokens + self.reasoning_budget
 
     def _token_limit(self) -> str:
@@ -548,6 +586,5 @@ class LlamaServer:
                    "limit": self._token_limit()}
 
 
-_reap_stale()  # clean up a llama-server orphaned by a previous (reloaded) instance
 server = LlamaServer()
 atexit.register(server.stop)

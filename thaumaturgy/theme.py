@@ -1,4 +1,4 @@
-"""Visual theme — matches the nicegui.io landing-page aesthetic.
+"""Visual theme: matches the nicegui.io landing-page aesthetic.
 
 Palette + fonts were lifted from the live nicegui.io styles, then the brand
 blue was deepened for the dark theme (nicegui's own is the softer #5898d4):
@@ -103,6 +103,32 @@ _HEAD_HTML = """
     border-radius: 0;
   }
 
+  /* Side-by-side span panes on the Editing page. Fixed height so the original
+     and the rewrite stay aligned as the rewrite streams in. */
+  .tg-span-box {
+    border-radius: 8px;
+    background: rgba(52, 97, 140, 0.06);
+    height: 320px;
+    overflow: auto;
+  }
+  .body--dark .tg-span-box { background: rgba(52, 97, 140, 0.16); }
+
+  /* One message of the "show prompt" dump. */
+  .tg-prompt-block {
+    background: rgba(52, 97, 140, 0.06);
+    border-radius: 6px;
+    padding: 8px 10px;
+    line-height: 1.45;
+  }
+  .body--dark .tg-prompt-block { background: rgba(52, 97, 140, 0.16); }
+  .tg-span-box pre {
+    margin: 0;
+    padding: 10px 12px;
+    background: none !important;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
   /* Soft, rounded cards with diffuse shadows */
   .q-card {
     border-radius: var(--tg-radius);
@@ -127,7 +153,7 @@ _HEAD_HTML = """
   .tg-field .q-field__control::before,
   .tg-field .q-field__control::after { border: none !important; }
 
-  /* Snappier interactions — halve Quasar's default ~300ms transitions */
+  /* Snappier interactions: halve Quasar's default ~300ms transitions */
   .q-transition--fade-enter-active, .q-transition--fade-leave-active,
   .q-transition--scale-enter-active, .q-transition--scale-leave-active,
   .q-transition--jump-down-enter-active, .q-transition--jump-down-leave-active,

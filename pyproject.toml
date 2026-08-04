@@ -21,8 +21,14 @@ training = [
     "gguf", "sentencepiece", "protobuf",
 ]
 
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.uv.sources]
-# Not on PyPI — oobabooga's prebuilt llama-server (CUDA cu131, Linux x86_64).
+# Not on PyPI: oobabooga's prebuilt llama-server (CUDA cu131, Linux x86_64).
 llama-cpp-binaries = { url = "https://github.com/oobabooga/llama-cpp-binaries/releases/download/v0.138.0/llama_cpp_binaries-0.138.0+cu131-py3-none-linux_x86_64.whl" }
 
 [project.scripts]

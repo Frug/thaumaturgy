@@ -34,7 +34,7 @@ CONVERTER_URL = "https://codeload.github.com/ggml-org/llama.cpp/tar.gz/{commit}"
 CONVERTER_MEMBERS = ("convert_hf_to_gguf.py", "conversion/")
 # A split model's parts, e.g. "model-Q4_K_M-00001-of-00003.gguf".
 _SHARD_RE = re.compile(r"(?i)-\d{5}-of-\d{5}\.gguf$")
-# Just the quant itself, stopping before build suffixes like "_hb16" — those
+# Just the quant itself, stopping before build suffixes like "_hb16"; those
 # are already visible in the label, and swallowing them makes the badge lie.
 # Longest forms first: Q4_K_M must win over Q4_K.
 _QUANT_RE = re.compile(
