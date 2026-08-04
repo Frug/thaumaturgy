@@ -13,7 +13,7 @@ CHARS_PER_TOKEN = 4
 MIN_SPAN_CHARS = 40
 
 # Boundaries land after sentence punctuation, at paragraph breaks, and before
-# markdown blocks — never at a bare newline, which is a soft wrap in
+# markdown blocks, never at a bare newline, which is a soft wrap in
 # hard-wrapped prose. A span opening mid-sentence makes the model complete the
 # fragment from context and duplicate those words at the join.
 _BOUNDARY_RE = re.compile(

@@ -1,6 +1,6 @@
 """Checks on a model's rewrite of one passage.
 
-Pure text in, reasons out — no jobs, no spans, no settings. Each check exists
+Pure text in, reasons out: no jobs, no spans, no settings. Each check exists
 because a real rewrite failed that way while every other check read it as clean.
 """
 
@@ -49,7 +49,7 @@ class Validator:
     def drawn_from_source(self, original: str, text: str) -> float:
         """Share of `text` that traces back to `original`, 0..1.
 
-        Deletion leaves this at 1.0 — every remaining character still came from
+        Deletion leaves this at 1.0; every remaining character still came from
         the source. A symmetric similarity would punish deletion instead.
         """
         a, b = flatten(original), flatten(text)
@@ -81,7 +81,7 @@ class Validator:
     def starts_at_start(self, original: str, text: str) -> bool:
         """Whether the rewrite opens where the passage opens.
 
-        Mirror of reaches_end. Skipping ahead — to one speaker's lines, say —
+        Mirror of reaches_end. Skipping ahead (to one speaker's lines, say)
         looks clean to every other check: no invention, ending lines up, length
         inside the ratio.
         """
@@ -127,7 +127,7 @@ class Validator:
             flags.append("empty")
             return flags
         # Internal paragraph breaks are the model's to keep; losing one merges
-        # paragraphs. Moot once deletions are allowed — removing content removes
+        # paragraphs. Moot once deletions are allowed: removing content removes
         # the blank lines around it.
         if not self.allow_deletions and text.count("\n\n") < original.count("\n\n"):
             flags.append("lost-break")

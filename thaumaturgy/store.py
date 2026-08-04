@@ -15,7 +15,7 @@ def _app_config_path() -> Path:
 
 
 def _as_mapping(value) -> dict:
-    """A dict, or an empty one — these files are hand-editable."""
+    """A dict, or an empty one; these files are hand-editable."""
     return value if isinstance(value, dict) else {}
 
 
@@ -98,7 +98,7 @@ def save_chat(chat: dict) -> None:
     chat["title"] = _title_from(chat.get("messages", []))
     target = _chat_path(chat["id"], chat.get("scenario"))
     # Stale copies only exist right after a chat moves, and this runs twice a
-    # second while streaming — so skip the tree walk once it's settled.
+    # second while streaming, so skip the tree walk once it's settled.
     settled = target.exists()
     if not settled:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -203,7 +203,7 @@ def delete_job(job_id: str) -> None:
 
 
 # ── Editing instruction sets (one file: <data>/editing_prompts.yaml) ────────
-# The prompt text for an editing job — the author's own instructions plus the
+# The prompt text for an editing job: the author's own instructions plus the
 # wrapper the page puts around each passage. Kept apart from a job so a set of
 # instructions that works can be reused on the next document. Deliberately dumb
 # here: the defaults live with the code that uses them, in thaumaturgy.editing.
@@ -328,7 +328,7 @@ def delete_scenario(scenario: dict) -> None:
 # ── Parameter sets (persisted as one file: <data>/presets.yaml) ──────────────
 # Kept unified in a single file (not one-per-set) so the whole collection is
 # trivial to gitignore. On first run the file is seeded from BUILTIN_PRESETS;
-# thereafter it's the user's own — edits/renames/deletes all land here.
+# thereafter it's the user's own; edits/renames/deletes all land here.
 
 BUILTIN_PRESETS = {
     "Default": dict(max_new_tokens=512, temperature=0.8, top_p=0.95, top_k=40, min_p=0.05, repetition_penalty=1.10),
@@ -386,7 +386,7 @@ def save_presets(doc: dict) -> None:
 #
 # Each model owns its settings: the values are bounded by model properties
 # (block count, trained context, template), so the same numbers mean something
-# different on another model. Named sets are templates — starting points copied
+# different on another model. Named sets are templates: starting points copied
 # onto a model, not a live binding.
 
 # Injected as the model's own last thought before the forced end-of-thinking

@@ -1,18 +1,19 @@
 """The chat service: owns the open chat, its scenario, and in-flight replies.
 
 Replies are tracked per chat rather than one at a time, so switching away from a
-generating chat and back keeps it — the page re-attaches to whatever is running.
+generating chat and back keeps it; the page re-attaches to whatever is running.
 
 One instance for the process, like engine.server.
 """
 
-from dataclasses import dataclass
 from enum import StrEnum, auto
 
 from thaumaturgy import appstate, engine, store
 from thaumaturgy.chat import prompt
 from thaumaturgy.chat.models import Chat, Message, Role, Scenario
 from thaumaturgy.chat.runner import ChatRun
+from thaumaturgy.lang import en
+from thaumaturgy.outcome import Outcome
 
 
 class Step(StrEnum):
@@ -21,12 +22,6 @@ class Step(StrEnum):
     UPDATED = auto()   # state changed, nothing generating
     IDLE = auto()      # nothing open
     ERROR = auto()
-
-
-@dataclass(frozen=True)
-class Outcome:
-    step: Step
-    message: str = ""
 
 
 class ChatService:
@@ -113,8 +108,7 @@ class ChatService:
 
     # ── generation ───────────────────────────────────────────────────────────
     def run_for(self, chat_id: str | None) -> ChatRun | None:
-        run = self._runs.get(chat_id or "")
-        return run if run is not None and not run.done else run
+        return self._runs.get(chat_id or "")
 
     @property
     def run(self) -> ChatRun | None:
@@ -151,7 +145,7 @@ class ChatService:
 
     def send(self, text: str) -> Outcome:
         if not engine.server.running:
-            return Outcome(Step.BLOCKED, "Load a model on the Model page first.")
+            return Outcome(Step.BLOCKED, en.NO_MODEL)
         if not text.strip():
             return Outcome(Step.IDLE)
         if self.chat is None:
@@ -159,7 +153,7 @@ class ChatService:
         if self.busy(self.chat.id):
             # A second worker on the same chat would interleave its writes with
             # the first's and evict it from the registry.
-            return Outcome(Step.BLOCKED, "Wait for the current reply to finish.")
+            return Outcome(Step.BLOCKED, en.CHAT_BUSY)
         self.chat.append(Message(role=Role.USER, name="You", text=text))
         self._save()
         return self._reply()
@@ -168,9 +162,9 @@ class ChatService:
         if self.chat is None:
             return Outcome(Step.IDLE)
         if not engine.server.running:
-            return Outcome(Step.BLOCKED, "Load a model on the Model page first.")
+            return Outcome(Step.BLOCKED, en.NO_MODEL)
         if self.busy(self.chat.id):
-            return Outcome(Step.BLOCKED, "Wait for the current reply to finish.")
+            return Outcome(Step.BLOCKED, en.CHAT_BUSY)
         index = self.chat.latest_assistant_index()
         if index is None:
             return Outcome(Step.BLOCKED,
@@ -192,7 +186,7 @@ class ChatService:
         if self.chat is None:
             return Outcome(Step.IDLE)
         if self.busy(self.chat.id):
-            return Outcome(Step.BLOCKED, "Wait for the current reply to finish.")
+            return Outcome(Step.BLOCKED, en.CHAT_BUSY)
         index = self.chat.latest_assistant_index()
         if index is None:
             return Outcome(Step.BLOCKED,

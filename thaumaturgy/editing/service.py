@@ -1,7 +1,7 @@
 """The editing service: owns the open job, the in-flight run, and the rules.
 
 Every method returns an Outcome describing what happened, so the whole state
-machine — retry-on-truncation, auto-accept, cursor advance — can be driven from
+machine (retry-on-truncation, auto-accept, cursor advance) can be driven from
 a script with no UI attached.
 
 One instance for the process, like engine.server. That also means a browser
@@ -10,7 +10,6 @@ reload cannot orphan a run: the page re-attaches to whatever is in flight.
 
 import json
 import time
-from dataclasses import dataclass
 from enum import StrEnum, auto
 
 from thaumaturgy import appstate, engine, store
@@ -27,6 +26,8 @@ from thaumaturgy.editing.models import (
 from thaumaturgy.editing.prompt import PromptBuilder
 from thaumaturgy.editing.runner import SpanRun
 from thaumaturgy.editing.validator import Validator
+from thaumaturgy.lang import en
+from thaumaturgy.outcome import Outcome
 from thaumaturgy.paths import log_dir
 
 
@@ -39,12 +40,6 @@ class Step(StrEnum):
     ERROR = auto()
     BLOCKED = auto()      # no model loaded, or the server is busy
     IDLE = auto()         # nothing open
-
-
-@dataclass(frozen=True)
-class Outcome:
-    step: Step
-    message: str = ""
 
 
 class EditingService:
@@ -135,7 +130,7 @@ class EditingService:
         if self.job is None:
             return Outcome(Step.IDLE)
         if not engine.server.running:
-            return Outcome(Step.BLOCKED, "Load a model on the Model page first.")
+            return Outcome(Step.BLOCKED, en.NO_MODEL)
         if self.busy():
             return Outcome(Step.BLOCKED,
                            "The model is busy — wait for the current generation.")
@@ -206,7 +201,7 @@ class EditingService:
         if self.job is None or self.index is None:
             return Outcome(Step.IDLE)
         if self.run is not None:
-            return Outcome(Step.BLOCKED, "Wait for the current span to finish.")
+            return Outcome(Step.BLOCKED, en.SPAN_BUSY)
         return None
 
     def accept(self, text: str | None = None) -> Outcome:

@@ -3,7 +3,7 @@
 We reuse textgen's approach: spawn a resolved `llama-server` binary as a
 subprocess and talk to it over HTTP. Generation goes through llama-server's
 OpenAI-compatible `/v1/chat/completions` endpoint, so the model's own chat
-template and sampling are handled by llama.cpp — we just pass messages + params.
+template and sampling are handled by llama.cpp; we just pass messages + params.
 
 Single model at a time (one subprocess); matches local single-user use.
 """
@@ -43,7 +43,7 @@ def reap_stale() -> None:
 
     Hot reload recreates the LlamaServer singleton with an empty handle while
     the old subprocess keeps running (and holding VRAM). We record each server's
-    PID in a file; on startup we terminate a leftover one — but only if the PID
+    PID in a file; on startup we terminate a leftover one, but only if the PID
     is still an actual llama-server, to guard against PID reuse.
     """
     pf = _pidfile()
@@ -87,7 +87,7 @@ def list_models() -> list[str]:
 
 
 def model_files(name: str) -> list[Path]:
-    """Every file backing one model — a whole shard set, or a lone file.
+    """Every file backing one model: a whole shard set, or a lone file.
 
     Removing just the named part of a split model would strand the other parts
     as unloadable orphans, so deletion has to work on the set.
@@ -502,7 +502,7 @@ class LlamaServer:
         """Best estimate of the loaded server's context window.
 
         Prefer /props n_ctx, but that read can fail silently after load, so fall
-        back to the launched -c value and then the model's trained context —
+        back to the launched -c value and then the model's trained context:
         anything to avoid an unbounded generation with no stop button.
         """
         if self.n_ctx:
@@ -517,7 +517,7 @@ class LlamaServer:
         max_tokens bounds thinking and reply together, but the setting means
         reply tokens, so the thinking budget is added to keep the reply's
         allowance whole. An unrestricted budget has no such total, leaving the
-        context window as the only bound — sent explicitly, since omitting the
+        context window as the only bound, sent explicitly, since omitting the
         field gives a runaway generation no stop button.
         """
         if not self.thinking_enabled():

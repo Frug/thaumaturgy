@@ -1,4 +1,4 @@
-"""Chat page — conversation view with a per-scenario chat sidebar.
+"""Chat page: conversation view with a per-scenario chat sidebar.
 
 Rendering only. The chat service owns the conversation, its scenario, and any
 reply in flight; this module draws it and collects input.
@@ -12,13 +12,12 @@ from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine
 from thaumaturgy.chat import Message, Step, chat
+from thaumaturgy.ui.outcomes import notify
 
 # Each streamed update re-parses the whole message as markdown, so cap the
 # re-render rate and prefer to land it on a newline boundary.
 _STREAM_MIN_INTERVAL = 0.2
 _STREAM_MAX_INTERVAL = 0.4
-
-NOTIFY_KIND = {Step.BLOCKED: "warning", Step.ERROR: "negative"}
 
 
 def _rel_time(ts: float | None) -> str:
@@ -80,7 +79,7 @@ class _MessageView:
     """Live handles into one rendered message, so a stream can update it in place.
 
     The Thinking pane is built up front and hidden because the bubble's slot is
-    closed by the time reasoning arrives — an observer can't add elements then.
+    closed by the time reasoning arrives; an observer can't add elements then.
     """
 
     def __init__(self, text_md, reasoning_box=None, reasoning_md=None):
@@ -143,11 +142,6 @@ def render():
         appstate.state.current_scenario = chat.scenario_name
     page: dict = {"inner": None, "stream_view": None, "observed": None,
                   "refresh_context": lambda: None}
-
-    def notify(outcome) -> None:
-        if outcome.message:
-            kind = NOTIFY_KIND.get(outcome.step)
-            ui.notify(outcome.message, type=kind) if kind else ui.notify(outcome.message)
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
@@ -280,7 +274,7 @@ def render():
             scroll_bottom()
             chat_list.refresh()
             if outcome.step is Step.ERROR:
-                # Runs as a bare task, which has no slot stack of its own —
+                # Runs as a bare task, which has no slot stack of its own;
                 # ui.notify needs one to find the client.
                 with msgs_col:
                     notify(outcome)

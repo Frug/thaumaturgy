@@ -1,6 +1,6 @@
 """Point the data directory somewhere disposable.
 
-Unset, it resolves to ./data — the real chats, jobs, and llama-server pidfile.
+Unset, it resolves to ./data: the real chats, jobs, and llama-server pidfile.
 """
 
 import os

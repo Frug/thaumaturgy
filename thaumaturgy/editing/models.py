@@ -15,7 +15,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "add, remove, or reorder content."
 )
 
-# Wrapper text around each passage — editable per job, competes with the system
+# Wrapper text around each passage: editable per job, competes with the system
 # prompt. Placeholders: {passage}, {before}, {after}, {first_words},
 # {last_words}. Missing ones are fine: the passage is appended and context is
 # dropped.
@@ -33,7 +33,7 @@ DEFAULT_CONTEXT_FRAMING = (
     "--- text after the passage ---\n{after}"
 )
 
-# Spoken as the model. Off by default — attributed words steer in ways the
+# Spoken as the model. Off by default: attributed words steer in ways the
 # system prompt cannot see.
 DEFAULT_PRIMED_REPLY = (
     "Understood. I have read the surrounding text for reference only and will "
@@ -69,7 +69,7 @@ def _as_num(value, cast, fallback):
 
 @dataclass
 class Instructions:
-    """Task wording — the part worth carrying to the next document."""
+    """Task wording: the part worth carrying to the next document."""
 
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     passage_instruction: str = DEFAULT_PASSAGE_INSTRUCTION
@@ -102,7 +102,7 @@ class Instructions:
 
 @dataclass
 class Settings:
-    """Numeric tuning — belongs to a document's size and the loaded model."""
+    """Numeric tuning: belongs to a document's size and the loaded model."""
 
     max_new_tokens: int = 700
     temperature: float = 0.2
@@ -250,9 +250,12 @@ class Job:
     # ── spans ────────────────────────────────────────────────────────────────
     def divide(self) -> None:
         """Build the span list. Only on first open; spans are then persisted."""
-        target = self.budgets.span_target if self.budgets else 550
+        # Without a loaded server to size against, the settings alone still give
+        # a span target: the reply cap less the response buffer.
+        budgets = self.budgets or Budgets.derive(self.settings, None)
         self.spans = [Span(s, e, self.source_text[s:e])
-                      for s, e in spans_mod.divide(self.source_text, target)]
+                      for s, e in spans_mod.divide(self.source_text,
+                                                   budgets.span_target)]
 
     def split(self, index: int) -> bool:
         """Replace one oversize span with two. False once too small to divide.

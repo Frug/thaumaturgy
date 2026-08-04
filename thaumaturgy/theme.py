@@ -1,4 +1,4 @@
-"""Visual theme — matches the nicegui.io landing-page aesthetic.
+"""Visual theme: matches the nicegui.io landing-page aesthetic.
 
 Palette + fonts were lifted from the live nicegui.io styles, then the brand
 blue was deepened for the dark theme (nicegui's own is the softer #5898d4):
@@ -153,7 +153,7 @@ _HEAD_HTML = """
   .tg-field .q-field__control::before,
   .tg-field .q-field__control::after { border: none !important; }
 
-  /* Snappier interactions — halve Quasar's default ~300ms transitions */
+  /* Snappier interactions: halve Quasar's default ~300ms transitions */
   .q-transition--fade-enter-active, .q-transition--fade-leave-active,
   .q-transition--scale-enter-active, .q-transition--scale-leave-active,
   .q-transition--jump-down-enter-active, .q-transition--jump-down-leave-active,

@@ -1,4 +1,4 @@
-"""Application chrome — header and left navigation drawer."""
+"""Application chrome: header and left navigation drawer."""
 
 from nicegui import app, ui
 
