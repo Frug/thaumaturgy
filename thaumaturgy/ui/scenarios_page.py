@@ -1,4 +1,4 @@
-"""Scenarios page — manage conversation setups."""
+"""Scenarios page: manage conversation setups."""
 
 from nicegui import ui
 

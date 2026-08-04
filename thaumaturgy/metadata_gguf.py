@@ -1,9 +1,9 @@
-"""Minimal GGUF header reader — pull a model's trained context length without
+"""Minimal GGUF header reader: pull a model's trained context length without
 loading it.
 
 We only need a couple of scalar metadata keys (architecture + context length),
 so we parse the KV header and *skip* array bodies (the tokenizer vocab is a
-100k+ entry string array — decoding it would make this slow). Reading stops as
+100k+ entry string array; decoding it would make this slow). Reading stops as
 soon as the context-length key is found.
 """
 

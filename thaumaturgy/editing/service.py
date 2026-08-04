@@ -1,7 +1,7 @@
 """The editing service: owns the open job, the in-flight run, and the rules.
 
 Every method returns an Outcome describing what happened, so the whole state
-machine — retry-on-truncation, auto-accept, cursor advance — can be driven from
+machine (retry-on-truncation, auto-accept, cursor advance) can be driven from
 a script with no UI attached.
 
 One instance for the process, like engine.server. That also means a browser

@@ -1,7 +1,7 @@
 """The chat service: owns the open chat, its scenario, and in-flight replies.
 
 Replies are tracked per chat rather than one at a time, so switching away from a
-generating chat and back keeps it — the page re-attaches to whatever is running.
+generating chat and back keeps it; the page re-attaches to whatever is running.
 
 One instance for the process, like engine.server.
 """

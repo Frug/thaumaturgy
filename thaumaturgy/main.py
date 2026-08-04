@@ -1,4 +1,4 @@
-"""thaumaturgy entrypoint — application shell (header + nav drawer) and page routes."""
+"""thaumaturgy entrypoint: application shell (header + nav drawer) and page routes."""
 
 import os
 from collections.abc import Callable
@@ -87,6 +87,6 @@ def cli():
 
 
 # NiceGUI's reloader re-imports this module as __mp_main__, and `python -m
-# thaumaturgy.main` runs it as __main__ — both start with reload enabled.
+# thaumaturgy.main` runs it as __main__; both start with reload enabled.
 if __name__ in {"__main__", "__mp_main__"}:
     main()

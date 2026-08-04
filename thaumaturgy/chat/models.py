@@ -60,7 +60,7 @@ class Message:
         return f"Generation finished with reason: {reason}."
 
     def clear_generation_state(self) -> None:
-        """Forget how the last run ended — used when a reply is hand-edited."""
+        """Forget how the last run ended; used when a reply is hand-edited."""
         self.finish_reason = None
         self.finish_limit = TOKEN_CAP_LIMIT
         self.generation_error = None
@@ -110,7 +110,7 @@ class Chat:
         """Index of the final assistant reply, when it can be redone.
 
         Only the last message qualifies, and only once the user has said
-        something — an opening line has nothing to regenerate from.
+        something; an opening line has nothing to regenerate from.
         """
         if not self.messages or self.messages[-1].role is not Role.ASSISTANT:
             return None

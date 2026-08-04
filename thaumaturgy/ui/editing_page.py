@@ -1,4 +1,4 @@
-"""Editing page — walk a long document past the model one span at a time.
+"""Editing page: walk a long document past the model one span at a time.
 
 Rendering only. The service owns the job, the run, and the rules; this module
 shows what it reports and collects decisions.
@@ -88,7 +88,7 @@ def _explain(field, text: str):
 
 
 def _switch(label: str, text: str):
-    """A switch with the same ? beside it — QToggle has no append slot."""
+    """A switch with the same ? beside it; QToggle has no append slot."""
     with ui.row().classes("items-center gap-1 no-wrap"):
         toggle = ui.switch(label)
         ui.icon("help_outline").classes("text-sm text-muted cursor-help").tooltip(text)
@@ -619,7 +619,7 @@ def render():
                         ui.number("Temperature", value=0.2, min=0, max=2, step=0.05)
                         .props("filled").classes("flex-1 tg-field"), HELP["temperature"])
                 # Every word the tool puts around the passage, laid out to be
-                # edited or emptied — it competes with the system prompt above.
+                # edited or emptied; it competes with the system prompt above.
                 with ui.expansion("Prompt wrapper — text added around your passage") \
                         .classes("w-full").props("dense"):
                     ui.label(

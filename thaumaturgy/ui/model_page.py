@@ -1,4 +1,4 @@
-"""Model page — two columns: model/load settings (left) + generation params (right).
+"""Model page: two columns, model/load settings (left) + generation params (right).
 
 The left panel scans data/models for GGUFs and loads/unloads them via the engine
 (spawns llama-server). The right panel shows the selected parameter set (read-only)
@@ -76,7 +76,7 @@ def _slider_row(label: str, minv, maxv, step, value, decimals: int, on_change=No
 
 
 def _file_size_gb(name: str) -> float:
-    """Size of a whole model — every shard, not just the part named."""
+    """Size of a whole model: every shard, not just the part named."""
     try:
         return sum(p.stat().st_size for p in engine.model_files(name)) / 1e9
     except OSError:
@@ -339,7 +339,7 @@ def _model_card(bridge):
         async def run_job(fn, *args):
             """Run one download/convert job, mirroring its progress into the dialog.
 
-            Close stays live throughout — these run for tens of minutes — so the
+            Close stays live throughout (these run for tens of minutes), so the
             busy flag is what stops a second job stacking on the first.
             """
             if dl_state["busy"]:
@@ -506,8 +506,8 @@ def _model_card(bridge):
             server_output_scroll.scroll_to(percent=1.0)
 
         # app.timer, not ui.timer: ui.timer resolves a weakref to its parent slot
-        # on the way into its run loop — before it consults its own is_deleted
-        # check — and raises once this client's element tree has been collected.
+        # on the way into its run loop, before it consults its own is_deleted
+        # check, and raises once this client's element tree has been collected.
         # app.timer never touches the slot, so we stop it ourselves above.
         log_timer = app.timer(1.0, refresh_server_output, immediate=False)
 

@@ -1,4 +1,4 @@
-"""Chat page — conversation view with a per-scenario chat sidebar.
+"""Chat page: conversation view with a per-scenario chat sidebar.
 
 Rendering only. The chat service owns the conversation, its scenario, and any
 reply in flight; this module draws it and collects input.
@@ -79,7 +79,7 @@ class _MessageView:
     """Live handles into one rendered message, so a stream can update it in place.
 
     The Thinking pane is built up front and hidden because the bubble's slot is
-    closed by the time reasoning arrives — an observer can't add elements then.
+    closed by the time reasoning arrives; an observer can't add elements then.
     """
 
     def __init__(self, text_md, reasoning_box=None, reasoning_md=None):
@@ -274,7 +274,7 @@ def render():
             scroll_bottom()
             chat_list.refresh()
             if outcome.step is Step.ERROR:
-                # Runs as a bare task, which has no slot stack of its own —
+                # Runs as a bare task, which has no slot stack of its own;
                 # ui.notify needs one to find the client.
                 with msgs_col:
                     notify(outcome)

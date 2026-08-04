@@ -1,7 +1,7 @@
 """Checks on a model's rewrite.
 
 Every case is a failure a real run produced, paired with the shapes that must
-NOT flag — a reviewer who learns to ignore the badges gains nothing from them.
+NOT flag; a reviewer who learns to ignore the badges gains nothing from them.
 """
 
 import pytest
