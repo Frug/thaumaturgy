@@ -6,13 +6,11 @@ NiceGUI — the page is presentation only.
 """
 
 from thaumaturgy.chat.models import Chat, Message, Role, Scenario
-from thaumaturgy.chat.service import ChatService, Outcome, Step, chat
+from thaumaturgy.chat.service import Step, chat
 
 __all__ = [
     "Chat",
-    "ChatService",
     "Message",
-    "Outcome",
     "Role",
     "Scenario",
     "Step",

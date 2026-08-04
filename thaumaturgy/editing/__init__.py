@@ -7,14 +7,12 @@ of the submodules. No NiceGUI — the page is presentation only.
 """
 
 from thaumaturgy.editing.models import Instructions, Job, Settings, Span, Status
-from thaumaturgy.editing.service import EditingService, Outcome, Step, editor
+from thaumaturgy.editing.service import Step, editor
 from thaumaturgy.editing.validator import Validator
 
 __all__ = [
-    "EditingService",
     "Instructions",
     "Job",
-    "Outcome",
     "Settings",
     "Span",
     "Status",
