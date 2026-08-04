@@ -11,6 +11,8 @@ from nicegui import ui
 from thaumaturgy import appstate, engine, store
 from thaumaturgy.editing import Instructions, Settings, Status, Step, editor
 from thaumaturgy.editing.spans import est_tokens
+from thaumaturgy.lang import en
+from thaumaturgy.ui.outcomes import notify
 
 FLAG_TEXT = {
     "truncated": "Reply hit the token cap",
@@ -24,26 +26,9 @@ FLAG_TEXT = {
     "error": "Generation failed",
 }
 
-NOTIFY_KIND = {Step.BLOCKED: "warning", Step.ERROR: "negative"}
 ROLE_COLOR = {"system": "purple", "user": "primary", "assistant": "teal"}
 
 _DECIDED = (str(Status.ACCEPTED), str(Status.ORIGINAL))
-
-
-def _explain(field, text: str):
-    """Hang a hoverable ? inside a field, on the right."""
-    with field.add_slot("append"):
-        ui.icon("help_outline").classes("text-sm text-muted cursor-help").tooltip(text)
-    return field
-
-
-def _switch(label: str, text: str):
-    """A switch with the same ? beside it — QToggle has no append slot."""
-    with ui.row().classes("items-center gap-1 no-wrap"):
-        toggle = ui.switch(label)
-        ui.icon("help_outline").classes("text-sm text-muted cursor-help").tooltip(text)
-    return toggle
-
 
 HELP = {
     "title": "Name for this job in the sidebar. Defaults to the uploaded "
@@ -95,6 +80,27 @@ HELP = {
 }
 
 
+def _explain(field, text: str):
+    """Hang a hoverable ? inside a field, on the right."""
+    with field.add_slot("append"):
+        ui.icon("help_outline").classes("text-sm text-muted cursor-help").tooltip(text)
+    return field
+
+
+def _switch(label: str, text: str):
+    """A switch with the same ? beside it — QToggle has no append slot."""
+    with ui.row().classes("items-center gap-1 no-wrap"):
+        toggle = ui.switch(label)
+        ui.icon("help_outline").classes("text-sm text-muted cursor-help").tooltip(text)
+    return toggle
+
+
+def _banner(text: str, color: str = "warning"):
+    """A full-width badge across the top of the page."""
+    props = f"color={color}" if color == "negative" else f"color={color} text-color=dark"
+    return ui.badge(text).props(props).classes("text-xs p-2 whitespace-normal")
+
+
 def _stored_percent(raw: dict) -> int:
     """Progress of a job on disk, without loading its whole document."""
     spans = raw.get("spans") or []
@@ -112,9 +118,7 @@ def render():
     # ── Outcome rendering ───────────────────────────────────────────────────
     def show(outcome) -> None:
         """Render whatever the service just did, and watch any run it started."""
-        if outcome.message:
-            kind = NOTIFY_KIND.get(outcome.step)
-            ui.notify(outcome.message, type=kind) if kind else ui.notify(outcome.message)
+        notify(outcome)
         job_list.refresh()
         show_panels()
         watch()
@@ -142,10 +146,7 @@ def render():
                     if run.text != last:
                         last = run.text
                         box.set_content(f"```\n{run.text}\n```")
-                outcome = editor.complete_run()
-                if outcome.message:
-                    kind = NOTIFY_KIND.get(outcome.step)
-                    ui.notify(outcome.message, type=kind) if kind else ui.notify(outcome.message)
+                notify(editor.complete_run())
                 job_list.refresh()
                 review.refresh()
         finally:
@@ -155,20 +156,14 @@ def render():
     @ui.refreshable
     def warnings():
         if not engine.server.running:
-            ui.badge("No model loaded — load one on the Model page.") \
-                .props("color=negative").classes("text-xs p-2 whitespace-normal")
+            _banner("No model loaded — load one on the Model page.", "negative")
             return
         if engine.server.thinking_enabled() and engine.server.reasoning_budget < 0:
-            ui.badge(
-                "This model thinks with an unrestricted budget, so a span "
-                "rewrite is capped only by the context window. Set reasoning "
-                "off or a budget on the Model page."
-            ).props("color=warning text-color=dark") \
-                .classes("text-xs p-2 whitespace-normal")
+            _banner("This model thinks with an unrestricted budget, so a span "
+                    "rewrite is capped only by the context window. Set reasoning "
+                    "off or a budget on the Model page.")
         if appstate.state.generations:
-            ui.badge("A chat generation is running — editing shares the one server.") \
-                .props("color=warning text-color=dark") \
-                .classes("text-xs p-2 whitespace-normal")
+            _banner("A chat generation is running — editing shares the one server.")
 
     # ── Job list ────────────────────────────────────────────────────────────
     @ui.refreshable
@@ -195,7 +190,7 @@ def render():
 
     def remove_job(job_id: str):
         if editor.running:
-            ui.notify("Wait for the current span to finish.", type="warning")
+            ui.notify(en.SPAN_BUSY, type="warning")
             return
         store.delete_job(job_id)
         if editor.job is not None and editor.job.id == job_id:
@@ -243,11 +238,11 @@ def render():
             ui.notify("Paste or upload a document first.", type="warning")
             return
         show(editor.create(title_box.value or "Untitled document", text,
-                            form_instructions(), form_settings()))
+                           form_instructions(), form_settings()))
 
     def open_job(job_id: str):
         if editor.running:
-            ui.notify("Wait for the current span to finish.", type="warning")
+            ui.notify(en.SPAN_BUSY, type="warning")
             return
         show(editor.open(job_id))
 
@@ -558,7 +553,7 @@ def render():
 
     def new_document():
         if editor.running:
-            ui.notify("Wait for the current span to finish.", type="warning")
+            ui.notify(en.SPAN_BUSY, type="warning")
             return
         editor.close()
         job_list.refresh()

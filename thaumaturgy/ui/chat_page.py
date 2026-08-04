@@ -12,13 +12,12 @@ from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine
 from thaumaturgy.chat import Message, Step, chat
+from thaumaturgy.ui.outcomes import notify
 
 # Each streamed update re-parses the whole message as markdown, so cap the
 # re-render rate and prefer to land it on a newline boundary.
 _STREAM_MIN_INTERVAL = 0.2
 _STREAM_MAX_INTERVAL = 0.4
-
-NOTIFY_KIND = {Step.BLOCKED: "warning", Step.ERROR: "negative"}
 
 
 def _rel_time(ts: float | None) -> str:
@@ -143,11 +142,6 @@ def render():
         appstate.state.current_scenario = chat.scenario_name
     page: dict = {"inner": None, "stream_view": None, "observed": None,
                   "refresh_context": lambda: None}
-
-    def notify(outcome) -> None:
-        if outcome.message:
-            kind = NOTIFY_KIND.get(outcome.step)
-            ui.notify(outcome.message, type=kind) if kind else ui.notify(outcome.message)
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
