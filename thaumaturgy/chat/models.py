@@ -15,8 +15,7 @@ class Role(StrEnum):
     ASSISTANT = "assistant"
 
 
-# What a "length" finish ran into: the reply cap, or the context window. The
-# engine reports it; this is the value to assume when nothing said otherwise.
+# finish_limit value for the token cap, as opposed to "context".
 TOKEN_CAP_LIMIT = "max_new_tokens"
 
 
