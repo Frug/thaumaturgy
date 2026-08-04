@@ -54,10 +54,6 @@ class Status(StrEnum):
 DECIDED = (Status.ACCEPTED, Status.ORIGINAL)
 UNDECIDED = (Status.PENDING, Status.PROPOSED, Status.FLAGGED)
 
-# Span size to divide at before a server is loaded and Budgets can be derived:
-# the default max_new_tokens less the default response_buffer.
-FALLBACK_SPAN_TARGET = 550
-
 
 def _as_str(value, fallback: str) -> str:
     """Present-but-empty is meaningful: the author cleared our wording."""
@@ -254,9 +250,12 @@ class Job:
     # ── spans ────────────────────────────────────────────────────────────────
     def divide(self) -> None:
         """Build the span list. Only on first open; spans are then persisted."""
-        target = self.budgets.span_target if self.budgets else FALLBACK_SPAN_TARGET
+        # Without a loaded server to size against, the settings alone still give
+        # a span target — the reply cap less the response buffer.
+        budgets = self.budgets or Budgets.derive(self.settings, None)
         self.spans = [Span(s, e, self.source_text[s:e])
-                      for s, e in spans_mod.divide(self.source_text, target)]
+                      for s, e in spans_mod.divide(self.source_text,
+                                                   budgets.span_target)]
 
     def split(self, index: int) -> bool:
         """Replace one oversize span with two. False once too small to divide.
