@@ -15,6 +15,11 @@ class Role(StrEnum):
     ASSISTANT = "assistant"
 
 
+# What a "length" finish ran into: the reply cap, or the context window. The
+# engine reports it; this is the value to assume when nothing said otherwise.
+TOKEN_CAP_LIMIT = "max_new_tokens"
+
+
 @dataclass
 class Message:
     role: Role
@@ -23,7 +28,7 @@ class Message:
     reasoning: str = ""
     model: str | None = None
     finish_reason: str | None = None
-    finish_limit: str = "max_new_tokens"
+    finish_limit: str = TOKEN_CAP_LIMIT
     generation_error: str | None = None
 
     @property
@@ -58,7 +63,7 @@ class Message:
     def clear_generation_state(self) -> None:
         """Forget how the last run ended — used when a reply is hand-edited."""
         self.finish_reason = None
-        self.finish_limit = "max_new_tokens"
+        self.finish_limit = TOKEN_CAP_LIMIT
         self.generation_error = None
         self.reasoning = ""
 
@@ -71,7 +76,7 @@ class Message:
             reasoning=d.get("reasoning") or "",
             model=d.get("model"),
             finish_reason=d.get("finish_reason"),
-            finish_limit=d.get("finish_limit", "max_new_tokens"),
+            finish_limit=d.get("finish_limit", TOKEN_CAP_LIMIT),
             generation_error=d.get("generation_error"),
         )
 

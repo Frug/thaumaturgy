@@ -16,7 +16,7 @@ EDGE_WORDS = 8  # quoted back to pin the ends of the passage
 
 
 @dataclass(frozen=True)
-class Window:
+class _Window:
     """Span indices either side of the target that go in as context."""
 
     first: int
@@ -30,7 +30,7 @@ class PromptBuilder:
         self.job = job
         self.supports_system_role = supports_system_role
 
-    def window(self, index: int) -> Window:
+    def _window(self, index: int) -> _Window:
         """`overlap` tokens of corrected text behind, original ahead.
 
         Wider windows bury the passage in similar prose and the model wanders
@@ -54,11 +54,11 @@ class PromptBuilder:
                 break
             end += 1
             used += size
-        return Window(start, end)
+        return _Window(start, end)
 
     def context(self, index: int) -> tuple[str, str]:
         spans = self.job.spans
-        w = self.window(index)
+        w = self._window(index)
         before = "".join(s.current_text() for s in spans[w.first:index])
         after = "".join(s.original for s in spans[index + 1:w.last + 1])
         return before, after

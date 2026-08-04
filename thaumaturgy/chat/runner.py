@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 from thaumaturgy import engine
 from thaumaturgy.chat import reply
-from thaumaturgy.chat.models import Message
+from thaumaturgy.chat.models import TOKEN_CAP_LIMIT, Message
 
 SAVE_INTERVAL = 0.5  # partial output survives a crash mid-reply
 
@@ -54,7 +54,7 @@ class ChatRun:
                 kind = event.get("type")
                 if kind == "finish":
                     self.message.finish_reason = event.get("reason")
-                    self.message.finish_limit = event.get("limit", "max_new_tokens")
+                    self.message.finish_limit = event.get("limit", TOKEN_CAP_LIMIT)
                     continue
                 delta = event.get("text", "")
                 if not delta:
