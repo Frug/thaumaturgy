@@ -395,6 +395,12 @@ def save_presets(doc: dict) -> None:
 # phrasing over another.
 DEFAULT_REASONING_BUDGET_MESSAGE = "Let me stop thinking and answer now."
 
+DEFAULT_CACHE_RAM = 0
+# Each checkpoint is a host-RAM copy of the slot's state, up to ~2 GB for a
+# 31B model. Slots times checkpoints is the ceiling that has to fit in RAM.
+DEFAULT_CTX_CHECKPOINTS = 2
+DEFAULT_PARALLEL_SLOTS = 2
+
 BUILTIN_RUNTIME_TEMPLATES = {
     "Default": dict(
         gpu_layers=-1,
@@ -404,6 +410,8 @@ BUILTIN_RUNTIME_TEMPLATES = {
         reasoning="auto",
         reasoning_budget=-1,
         reasoning_budget_message=DEFAULT_REASONING_BUDGET_MESSAGE,
+        cache_ram=DEFAULT_CACHE_RAM,
+        ctx_checkpoints=DEFAULT_CTX_CHECKPOINTS,
     ),
 }
 DEFAULT_RUNTIME_TEMPLATE = "Default"
@@ -428,11 +436,14 @@ def normalize_runtime(vals) -> dict:
     src = vals if isinstance(vals, dict) else {}
     out = dict(BUILTIN_RUNTIME_TEMPLATES[DEFAULT_RUNTIME_TEMPLATE])
     for key, cast in (("gpu_layers", int), ("context_size", int),
-                      ("reasoning_budget", int)):
+                      ("reasoning_budget", int), ("cache_ram", int),
+                      ("ctx_checkpoints", int)):
         try:
             out[key] = cast(src.get(key, out[key]))
         except (TypeError, ValueError):
             pass
+    out["cache_ram"] = max(-1, out["cache_ram"])
+    out["ctx_checkpoints"] = max(0, out["ctx_checkpoints"])
     for key, allowed in (("cache_type", RUNTIME_CACHE_TYPES),
                          ("chat_template", RUNTIME_CHAT_TEMPLATES),
                          ("reasoning", RUNTIME_REASONING_MODES)):
