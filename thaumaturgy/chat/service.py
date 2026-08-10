@@ -45,6 +45,7 @@ class ChatService:
     def select_scenario(self, name: str | None) -> Outcome:
         self.scenario_name = name
         appstate.state.current_scenario = name
+        store.save_last_scenario(name)
         return self.open_first(name)
 
     # ── chats ────────────────────────────────────────────────────────────────
@@ -96,6 +97,19 @@ class ChatService:
         store.delete_chat(chat_id)
         if was_open:
             return self.open_first(self.scenario_name)
+        return Outcome(Step.UPDATED)
+
+    def rename(self, chat_id: str, title: str) -> Outcome:
+        # Blocked mid-reply like delete is: the run holds its own Chat object
+        # and would write the derived title back over this one.
+        if self.run_for(chat_id) is not None:
+            return Outcome(Step.BLOCKED,
+                           "Wait for generation to finish before renaming this chat.")
+        if not store.rename_chat(chat_id, title):
+            return Outcome(Step.ERROR, "That chat could not be renamed.")
+        if self.chat is not None and self.chat.id == chat_id:
+            self.chat.title = title.strip()
+            self.chat.title_custom = True
         return Outcome(Step.UPDATED)
 
     def _save(self, chat: Chat | None = None) -> None:
