@@ -1,15 +1,78 @@
-"""Settings page: app preferences (data dir, theme, flags).
+"""Settings page: app preferences that persist to <data>/app_config.yaml."""
 
-Content is stubbed for now; the module exists so the route matches the other
-pages (chat / scenarios / model) with a proper render() entrypoint.
-"""
+import os
+from pathlib import Path
 
 from nicegui import ui
+
+from thaumaturgy import paths, store
+
+LOG_HELP = (
+    "Off by default. When set, llama-server's output is mirrored to "
+    "llama-server.log and each editing attempt is appended to editing.jsonl. "
+    "The in-app llama.cpp panel only keeps the last few hundred lines, so a "
+    "log directory is what lets you look at a load or a timing after the fact."
+)
 
 
 def render() -> None:
     """Build the Settings page inside the current layout container."""
-    with ui.card().classes("w-full max-w-3xl mx-auto items-center p-10 gap-2"):
+    env_override = (os.environ.get("THAUM_LOG_DIR") or "").strip()
+
+    with ui.card().classes("w-full max-w-3xl mx-auto p-8 gap-5"):
         ui.label("Settings").classes("text-2xl font-semibold")
-        ui.label("App settings (data dir, theme, flags) will live here.").classes(
-            "text-muted")
+
+        with ui.column().classes("tg-pset-box w-full gap-2"):
+            ui.label("Diagnostic logs").classes(
+                "text-xs text-muted uppercase tracking-wide")
+            log_input = ui.input(
+                label="Log directory",
+                value=env_override or store.log_dir_setting(),
+                placeholder=str(Path.home() / "thaumaturgy-logs"),
+            ).classes("w-full tg-field").props("filled clearable")
+            ui.label(LOG_HELP).classes("text-xs text-muted leading-snug")
+
+            status = ui.label().classes("text-sm")
+
+            def refresh_status() -> None:
+                current = paths.log_dir()
+                if current is None:
+                    status.text = "○ Logging off"
+                    status.classes(replace="text-sm text-muted")
+                else:
+                    status.text = f"● Writing to {current}"
+                    status.classes(replace="text-sm text-positive break-all")
+
+            def save() -> None:
+                raw = (log_input.value or "").strip()
+                if raw:
+                    path = Path(raw).expanduser()
+                    try:
+                        path.mkdir(parents=True, exist_ok=True)
+                    except OSError as exc:
+                        ui.notify(f"Can't use that directory: {exc}", type="negative")
+                        return
+                store.save_log_dir(raw)
+                refresh_status()
+                ui.notify(f"Logging to {raw}" if raw else "Logging off",
+                          type="positive")
+
+            def turn_off() -> None:
+                log_input.value = ""
+                save()
+
+            with ui.row().classes("w-full gap-2"):
+                save_btn = ui.button("Save", icon="save", on_click=save) \
+                    .props("color=positive unelevated")
+                off_btn = ui.button("Turn off", icon="block", on_click=turn_off) \
+                    .props("color=negative unelevated")
+
+            if env_override:
+                log_input.disable()
+                save_btn.disable()
+                off_btn.disable()
+                ui.label("Set by $THAUM_LOG_DIR, which overrides the saved "
+                         "setting. Unset it to manage the directory here.") \
+                    .classes("text-xs text-muted leading-snug")
+
+            refresh_status()

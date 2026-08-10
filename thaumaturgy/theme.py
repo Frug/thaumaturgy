@@ -191,6 +191,12 @@ _HEAD_HTML = """
      show Params(1/2) + SetsList(1/4), with the remaining 1/4 empty. */
   .tg-strip { transition: transform 200ms ease; }
   .tg-strip.tg-edit { transform: translateX(-40%); }
+  /* One scrollbar for the whole strip; the off-strip 25% stays clipped. */
+  .tg-strip-scroll {
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-bottom: 0.75rem;
+  }
 
   /* Grouped model-page controls. */
   .tg-pset-box {

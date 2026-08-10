@@ -258,6 +258,25 @@ def last_loaded_model() -> str | None:
     return model if isinstance(model, str) and model else None
 
 
+def log_dir_setting() -> str:
+    """The configured diagnostic-log directory, or "" when logging is off."""
+    value = load_app_config().get("log_dir")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def save_log_dir(path: str | None) -> None:
+    from thaumaturgy import paths
+
+    config = load_app_config()
+    path = (path or "").strip()
+    if path:
+        config["log_dir"] = path
+    else:
+        config.pop("log_dir", None)
+    save_app_config(config)
+    paths.reset_log_dir()
+
+
 # ── Scenarios (one YAML file each under <data>/scenarios/) ──────────────────
 # A scenario dict carries a "_file" key (its on-disk slug) so renames can move
 # the file.
