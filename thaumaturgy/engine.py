@@ -240,7 +240,9 @@ class LlamaServer:
               ctx_size: int = 0, cache_type: str = "fp16",
               chat_template: str = "auto", reasoning: str = "auto",
               reasoning_budget: int = -1,
-              reasoning_budget_message: str = "") -> None:
+              reasoning_budget_message: str = "",
+              cache_ram: int = store.DEFAULT_CACHE_RAM,
+              ctx_checkpoints: int = store.DEFAULT_CTX_CHECKPOINTS) -> None:
         self.stop()
         path = models_dir() / model_name
         if not path.exists():
@@ -252,6 +254,9 @@ class LlamaServer:
             "--host", "127.0.0.1", "--port", str(port),
             "-ngl", str(gpu_layers),
             "-c", str(ctx_size),
+            "-cram", str(cache_ram),
+            "-ctxcp", str(ctx_checkpoints),
+            "-np", str(store.DEFAULT_PARALLEL_SLOTS),
         ]
         if cache_type and cache_type != "fp16":
             cmd += ["-ctk", cache_type, "-ctv", cache_type]

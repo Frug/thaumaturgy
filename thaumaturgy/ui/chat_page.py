@@ -12,6 +12,7 @@ from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine
 from thaumaturgy.chat import Message, Step, chat
+from thaumaturgy.lang import en
 from thaumaturgy.ui.outcomes import notify
 
 # Each streamed update re-parses the whole message as markdown, so cap the
@@ -369,11 +370,11 @@ def render():
         text = _normalize_user_markdown(input_box.value or "")
         if not text:
             return
-        input_box.value = ""
         outcome = chat.send(text)
         if outcome.step is Step.BLOCKED:
-            notify(outcome)
+            notify(outcome)  # the draft stays in the box, so nothing is lost
             return
+        input_box.value = ""
         apply(outcome)
 
     def regenerate_last():
@@ -416,7 +417,7 @@ def render():
             with ui.scroll_area().classes("flex-1 w-full") as transcript_scroll:
                 msgs_col = ui.column().classes("w-full")
             with ui.row().classes("w-full max-w-3xl mx-auto items-end gap-2 no-wrap"):
-                input_box = ui.textarea(placeholder="Message…  (Ctrl+Enter to send)") \
+                input_box = ui.textarea() \
                     .props("filled autogrow input-style=max-height:40vh") \
                     .classes("flex-1 tg-field")
                 input_box.on("keydown.ctrl.enter", send)
@@ -431,11 +432,20 @@ def render():
                          "text-[11px] whitespace-normal text-center leading-tight")
 
     context_state = {"signature": None, "busy": False}
+    placeholder_state = {"text": None}
+
+    def sync_placeholder():
+        text = en.CHAT_PLACEHOLDER if engine.server.running \
+            else en.CHAT_PLACEHOLDER_NO_MODEL
+        if text != placeholder_state["text"]:
+            placeholder_state["text"] = text
+            input_box.props(f'placeholder="{text}"')
 
     async def refresh_context_counter():
         if input_box.is_deleted or context_counter.is_deleted:
             context_timer.deactivate()
             return
+        sync_placeholder()
         messages = chat.chat.messages if chat.chat else []
         last = messages[-1].text if messages else ""
         total = chat.context_total()
@@ -458,6 +468,7 @@ def render():
     def schedule_context_refresh(_=None):
         asyncio.create_task(refresh_context_counter())
 
+    sync_placeholder()
     page["refresh_context"] = schedule_context_refresh
     input_box.on_value_change(schedule_context_refresh)
     context_timer = app.timer(1.0, refresh_context_counter, immediate=False)

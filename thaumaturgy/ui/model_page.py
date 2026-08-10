@@ -32,6 +32,21 @@ CTX_HELP = (
     "other loaders. Common values: 4096, 8192, 16384, 32768, 65536, 131072."
 )
 
+CACHE_RAM_HELP = (
+    "Host RAM llama.cpp may spend snapshotting a chat's KV cache so returning "
+    "to it skips reprocessing. 0 = off, -1 = unlimited. A chat you are in the "
+    "middle of already reuses its own KV in VRAM, so this only pays off when "
+    "you switch between chats, scenarios or the editor. llama.cpp's own "
+    "default of 8192 accumulates over a session."
+)
+
+CTX_CHECKPOINTS_HELP = (
+    "Rewind points kept per slot, also in host RAM. Regenerating a reply "
+    "rewinds the KV cache, and on sliding-window models (Gemma) the older "
+    "state has left the window, so without a checkpoint the whole prompt is "
+    "reprocessed. llama.cpp's default is 32."
+)
+
 VRAM_HELP = (
     "A rough estimate of GPU memory use. It needs the runtime profile to pin "
     "both values it depends on: GPU layers set to 0 or higher (not -1/auto) "
@@ -83,9 +98,7 @@ def _file_size_gb(name: str) -> float:
         return 0.0
 
 
-def _runtime_load_args(vals: dict) -> tuple[int, int, str, str, str, int]:
-    gpu_layers = int(vals.get("gpu_layers", -1))
-    ctx_size = int(vals.get("context_size", 0))
+def _runtime_load_args(vals: dict) -> dict:
     cache_type = vals.get("cache_type", "fp16")
     if cache_type not in CACHE_TYPES:
         cache_type = "fp16"
@@ -95,11 +108,20 @@ def _runtime_load_args(vals: dict) -> tuple[int, int, str, str, str, int]:
     reasoning = vals.get("reasoning", "auto")
     if reasoning not in REASONING_MODES:
         reasoning = "auto"
-    reasoning_budget = int(vals.get("reasoning_budget", -1))
-    budget_message = str(vals.get("reasoning_budget_message",
-                                  store.DEFAULT_REASONING_BUDGET_MESSAGE))
-    return (gpu_layers, ctx_size, cache_type, chat_template, reasoning,
-            reasoning_budget, budget_message)
+    return dict(
+        gpu_layers=int(vals.get("gpu_layers", -1)),
+        ctx_size=int(vals.get("context_size", 0)),
+        cache_type=cache_type,
+        chat_template=chat_template,
+        reasoning=reasoning,
+        reasoning_budget=int(vals.get("reasoning_budget", -1)),
+        reasoning_budget_message=str(
+            vals.get("reasoning_budget_message",
+                     store.DEFAULT_REASONING_BUDGET_MESSAGE)),
+        cache_ram=int(vals.get("cache_ram", store.DEFAULT_CACHE_RAM)),
+        ctx_checkpoints=int(vals.get("ctx_checkpoints",
+                                     store.DEFAULT_CTX_CHECKPOINTS)),
+    )
 
 
 def _gpu_layer_ceiling(model_name: str | None) -> int:
@@ -150,6 +172,20 @@ def _runtime_reasoning_budget_label(vals: dict) -> str:
     if budget == 0:
         return "immediate end"
     return f"{budget:,} tokens"
+
+
+def _runtime_cache_ram_label(vals: dict) -> str:
+    mib = int(vals.get("cache_ram", store.DEFAULT_CACHE_RAM))
+    if mib == 0:
+        return "off"
+    if mib < 0:
+        return "unlimited"
+    return f"{mib:,} MiB"
+
+
+def _runtime_checkpoints_label(vals: dict) -> str:
+    count = int(vals.get("ctx_checkpoints", store.DEFAULT_CTX_CHECKPOINTS))
+    return "none" if count == 0 else f"{count:,}"
 
 
 def _runtime_budget_message_label(vals: dict) -> str:
@@ -520,15 +556,11 @@ def _model_card(bridge):
                 status.text = "○ Not loaded"
                 status.classes(replace="text-sm text-muted")
 
-        async def run_load(current_model: str, gpu_layers: int, ctx_size: int,
-                           cache_type: str, chat_template: str, reasoning: str,
-                           reasoning_budget: int, reasoning_budget_message: str):
+        async def run_load(current_model: str, args: dict):
             load_btn.props("loading")
             ui.notify(f"Loading {current_model}…")
             try:
-                await run.io_bound(engine.server.start, current_model, gpu_layers,
-                                   ctx_size, cache_type, chat_template, reasoning,
-                                   reasoning_budget, reasoning_budget_message)
+                await run.io_bound(engine.server.start, current_model, **args)
                 ui.notify(f"Loaded {current_model}")
             except Exception as exc:  # noqa: BLE001 - surface any startup failure
                 ui.notify(f"Load failed: {exc}", type="negative")
@@ -543,15 +575,12 @@ def _model_card(bridge):
             if not current_model:
                 ui.notify("No models in the models folder", type="negative")
                 return
-            (gpu_layers, ctx_size, cache_type, chat_template, reasoning,
-             reasoning_budget, budget_message) = (
-                _runtime_load_args(bridge["active_runtime"]()))
+            args = _runtime_load_args(bridge["active_runtime"]())
             # Backstop for hand-edited YAML; the slider can't exceed this.
             max_layers = engine.max_gpu_layers(current_model)
             if max_layers is not None:
-                gpu_layers = min(gpu_layers, max_layers)
-            await run_load(current_model, gpu_layers, ctx_size, cache_type,
-                           chat_template, reasoning, reasoning_budget, budget_message)
+                args["gpu_layers"] = min(args["gpu_layers"], max_layers)
+            await run_load(current_model, args)
 
         load_btn.on_click(load)
 
@@ -936,6 +965,9 @@ def render():
                     summary_row("Reasoning", _runtime_reasoning_label(runtime))
                     summary_row("Reasoning budget", _runtime_reasoning_budget_label(runtime))
                     summary_row("Budget message", _runtime_budget_message_label(runtime))
+                    summary_row("Prompt cache (RAM)", _runtime_cache_ram_label(runtime))
+                    summary_row("Context checkpoints",
+                                _runtime_checkpoints_label(runtime))
 
                 ui.separator()
                 with ui.column().classes("w-full gap-2"):
@@ -1051,6 +1083,16 @@ def render():
                      "its own voice, so it wraps up instead of stopping mid-sentence. "
                      "Only used when the budget is above 0.") \
                 .classes("text-xs text-muted leading-snug")
+            controls["cache_ram"] = ui.number(
+                label="Prompt cache (MiB of RAM)",
+                value=vals.get("cache_ram", store.DEFAULT_CACHE_RAM),
+                min=-1, step=512).classes("w-full tg-field").props("filled")
+            ui.label(CACHE_RAM_HELP).classes("text-xs text-muted leading-snug")
+            controls["ctx_checkpoints"] = ui.number(
+                label="Context checkpoints",
+                value=vals.get("ctx_checkpoints", store.DEFAULT_CTX_CHECKPOINTS),
+                min=0, step=1).classes("w-full tg-field").props("filled")
+            ui.label(CTX_CHECKPOINTS_HELP).classes("text-xs text-muted leading-snug")
 
             def save_runtime_edit(_=None):
                 # This closure holds the model the panel was built for; a
@@ -1058,6 +1100,8 @@ def render():
                 if current_model() != edited_model:
                     return
                 budget = controls["reasoning_budget"].value
+                cache_ram = controls["cache_ram"].value
+                checkpoints = controls["ctx_checkpoints"].value
                 runtime_models[edited_model] = store.normalize_runtime({
                     "gpu_layers": controls["gpu_layers"].value,
                     "context_size": controls["context_size"].value or 0,
@@ -1067,6 +1111,10 @@ def render():
                     "reasoning_budget": budget if budget is not None else -1,
                     "reasoning_budget_message":
                         (controls["reasoning_budget_message"].value or "").strip(),
+                    "cache_ram": (cache_ram if cache_ram is not None
+                                  else store.DEFAULT_CACHE_RAM),
+                    "ctx_checkpoints": (checkpoints if checkpoints is not None
+                                        else store.DEFAULT_CTX_CHECKPOINTS),
                 })
                 persist_runtime()
 
