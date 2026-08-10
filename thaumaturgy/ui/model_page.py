@@ -37,8 +37,7 @@ CACHE_RAM_HELP = (
     "to it skips reprocessing. 0 = off, -1 = unlimited. A chat you are in the "
     "middle of already reuses its own KV in VRAM, so this only pays off when "
     "you switch between chats, scenarios or the editor. llama.cpp's own "
-    "default of 8192 accumulates over a session and competes with everything "
-    "else on the machine for system memory."
+    "default of 8192 accumulates over a session."
 )
 
 CTX_CHECKPOINTS_HELP = (

@@ -396,8 +396,6 @@ def save_presets(doc: dict) -> None:
 DEFAULT_REASONING_BUDGET_MESSAGE = "Let me stop thinking and answer now."
 
 DEFAULT_CACHE_RAM = 0
-# Each checkpoint is a host-RAM copy of the slot's state, up to ~2 GB for a
-# 31B model. Slots times checkpoints is the ceiling that has to fit in RAM.
 DEFAULT_CTX_CHECKPOINTS = 2
 DEFAULT_PARALLEL_SLOTS = 2
 
