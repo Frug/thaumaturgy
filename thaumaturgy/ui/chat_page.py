@@ -137,10 +137,10 @@ class _MessageView:
         self.reasoning_box.set_visibility(bool(reasoning.strip()))
 
 
-def _message(m: Message, on_scenario_click=None) -> _MessageView:
+def _message(m: Message, on_scenario_click=None, on_edit=None) -> _MessageView:
     """Render one message row; returns handles to it (for live updates)."""
     clickable = (not m.is_user) and on_scenario_click is not None
-    with ui.row().classes("w-full gap-3 no-wrap items-start pb-4"):
+    with ui.row().classes("w-full gap-3 no-wrap items-start pb-4 tg-msg"):
         col = ui.column().classes("items-center gap-1 w-16 shrink-0")
         if clickable:
             col.classes("cursor-pointer hover:opacity-80")
@@ -168,6 +168,10 @@ def _message(m: Message, on_scenario_click=None) -> _MessageView:
             if warning:
                 ui.badge(warning).props("color=warning text-color=dark") \
                     .classes("self-start text-xs mt-1")
+            if on_edit is not None:
+                with ui.row().classes("w-full justify-end tg-msg-actions"):
+                    ui.button("Edit", icon="edit", on_click=on_edit) \
+                        .props("flat dense color=secondary").classes("text-xs")
     return _MessageView(md, box, reasoning_md)
 
 
@@ -253,7 +257,10 @@ def render():
                 regenerate_index = (None if streaming
                                     else chat.chat.latest_assistant_index())
                 for i, m in enumerate(chat.chat.messages):
-                    view = _message(m, on_scenario_click=open_scenario)
+                    on_edit = (None if streaming or not m.is_user
+                               else lambda idx=i: edit_user_message(idx))
+                    view = _message(m, on_scenario_click=open_scenario,
+                                    on_edit=on_edit)
                     if streaming and run_ is not None and i == run_.index:
                         page["stream_view"] = view
                     if i == regenerate_index:
@@ -348,7 +355,7 @@ def render():
 
     pending_delete = {"chat_id": None}
     pending_rename = {"chat_id": None}
-    pending_edit = {"chat_id": None}
+    pending_edit = {"chat_id": None, "index": None}
 
     with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:420px;max-width:92vw"):
@@ -372,12 +379,12 @@ def render():
 
     with ui.dialog() as edit_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:720px;max-width:92vw"):
-        ui.label("Edit Response").classes("text-lg font-semibold")
+        edit_title = ui.label("Edit Response").classes("text-lg font-semibold")
         edit_box = ui.textarea().props("filled autogrow input-style=max-height:60vh") \
             .classes("w-full tg-field")
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("Cancel", on_click=edit_dialog.close).props("flat")
-            ui.button("Save", icon="save", on_click=lambda: save_edited_response()) \
+            ui.button("Save", icon="save", on_click=lambda: save_edit()) \
                 .props("color=primary unelevated")
 
     def ask_delete_chat(raw: dict):
@@ -416,19 +423,39 @@ def render():
             notify(chat.edit_last(""))  # reuses the service's own guard messages
             return
         pending_edit["chat_id"] = chat.chat.id
+        pending_edit["index"] = None  # None = the latest reply
+        edit_title.text = "Edit Response"
         edit_box.value = message.text
         edit_dialog.open()
 
-    def save_edited_response():
+    def edit_user_message(index: int):
+        if chat.chat is None:
+            return
+        if chat.busy():
+            notify(chat.edit_message(index, ""))  # reuses the service's own guard
+            return
+        pending_edit["chat_id"] = chat.chat.id
+        pending_edit["index"] = index
+        edit_title.text = "Edit Message"
+        edit_box.value = chat.chat.messages[index].text
+        edit_dialog.open()
+
+    def save_edit():
         if pending_edit["chat_id"] != (chat.chat.id if chat.chat else None):
             edit_dialog.close()
             return
-        outcome = chat.edit_last(edit_box.value or "")
+        index = pending_edit["index"]
+        if index is None:
+            outcome = chat.edit_last(edit_box.value or "")
+        else:
+            outcome = chat.edit_message(
+                index, _normalize_user_markdown(edit_box.value or ""))
         if outcome.step is Step.BLOCKED:
             notify(outcome)
             return
         edit_dialog.close()
         pending_edit["chat_id"] = None
+        pending_edit["index"] = None
         apply(outcome)
 
     def new_chat():

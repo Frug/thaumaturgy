@@ -73,6 +73,11 @@ _HEAD_HTML = """
   /* Quoted dialogue in chat messages */
   .tg-quote { font-weight: 700; }
 
+  /* Per-message actions: out of the way until the message is hovered */
+  .tg-msg-actions { opacity: 0; transition: opacity 0.15s ease; }
+  .tg-msg:hover .tg-msg-actions,
+  .tg-msg-actions:focus-within { opacity: 1; }
+
   /* Compact chat-history list: square, tight rows that never overflow sideways */
   .tg-chat-item.q-item {
     border-radius: 0;

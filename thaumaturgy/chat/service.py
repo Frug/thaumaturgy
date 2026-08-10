@@ -213,6 +213,23 @@ class ChatService:
         self._save()
         return Outcome(Step.UPDATED)
 
+    def edit_message(self, index: int, text: str) -> Outcome:
+        """Rewrite one of the user's own messages, wherever it sits."""
+        if self.chat is None:
+            return Outcome(Step.IDLE)
+        if self.busy(self.chat.id):
+            return Outcome(Step.BLOCKED, en.CHAT_BUSY)
+        if not 0 <= index < len(self.chat.messages):
+            return Outcome(Step.ERROR, "That message is no longer there.")
+        message = self.chat.messages[index]
+        if message.role is not Role.USER:
+            return Outcome(Step.BLOCKED, "Only your own messages can be edited here.")
+        if not text.strip():
+            return Outcome(Step.BLOCKED, "Message text can't be empty.")
+        message.text = text
+        self._save()
+        return Outcome(Step.UPDATED)
+
     def editable_reply(self) -> Message | None:
         if self.chat is None:
             return None

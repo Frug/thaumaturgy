@@ -450,7 +450,10 @@ DEFAULT_REASONING_BUDGET_MESSAGE = "Let me stop thinking and answer now."
 
 DEFAULT_CACHE_RAM = 0
 DEFAULT_CTX_CHECKPOINTS = 2
-DEFAULT_PARALLEL_SLOTS = 2
+# One slot: llama.cpp splits -c evenly across slots. Each slot takes an even
+# portion of context size. With one slot, a reply in a second chat waits for the
+# first to finish instead of streaming alongside it.
+DEFAULT_PARALLEL_SLOTS = 1
 
 BUILTIN_RUNTIME_TEMPLATES = {
     "Default": dict(
