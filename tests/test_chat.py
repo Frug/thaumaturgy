@@ -36,6 +36,24 @@ def test_control_tokens_are_stripped():
         "<|channel|>final<|message|>done<|end|>")[0]
 
 
+@pytest.mark.parametrize("raw", [
+    "Hi.<|channel|>analysis<|message|>thinking<|end|>",
+    "Hi.<|channel>thought\nthinking",
+    "<|start|>assistant<|channel|>final<|message|>Hi.",
+])
+def test_a_marker_never_shows_while_it_is_still_arriving(raw):
+    # Deltas land a few characters at a time; every prefix is a frame the bubble
+    # would otherwise render.
+    for n in range(1, len(raw) + 1):
+        text, reasoning = reply.interpret(raw[:n], "", streaming=True)
+        assert "<" not in text and "<" not in reasoning, raw[:n]
+
+
+def test_the_final_pass_keeps_text_that_only_looked_like_a_marker():
+    assert reply.interpret("two < three <", "", streaming=True)[0] == "two < three"
+    assert reply.interpret("two < three <", "")[0] == "two < three <"
+
+
 def test_reasoning_is_promoted_when_there_is_nothing_else():
     # Some models put ordinary prose in the thought channel and never open a
     # final one; the bubble would otherwise be empty.

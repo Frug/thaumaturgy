@@ -15,7 +15,25 @@ _CHANNEL_RE = re.compile(
     r"<\|channel\|?>[ \t]*([A-Za-z0-9_.-]+)[ \t]*(?:<\|message\|>|<channel\|>|\r?\n)")
 _CONTROL_RE = re.compile(
     r"<\|start\|>[ \t]*assistant|<\|(?:start|end|return|message)\|>|<channel\|>")
+# A marker arrives a few characters at a time, so its opening sits at the end of
+# the text for a tick or two before the rest of it lands. Matching any tail that
+# could still become one keeps every dialect covered without naming them.
+_PARTIAL_RE = re.compile(
+    r"<\|?[A-Za-z_]*\|?$"                       # "<", "<|cha", "<|channel|"
+    r"|<\|channel\|?>[ \t]*[A-Za-z0-9_.-]*$"    # "<|channel|>analysi"
+    r"|<\|start\|>[ \t]*[A-Za-z]*$")            # "<|start|>assis"
 _THOUGHT_CHANNELS = {"thought", "thinking", "reasoning", "analysis"}
+
+
+def trim_partial_marker(text: str) -> str:
+    """Drop a trailing marker that hasn't finished arriving.
+
+    Repeated because trimming one fragment can expose another: the "<" opening
+    "<|message|>" hides behind it the "<|channel|>analysis" it terminates.
+    """
+    while (trimmed := _PARTIAL_RE.sub("", text)) != text:
+        text = trimmed
+    return text
 
 
 def join_blocks(parts: list[str]) -> str:
@@ -29,11 +47,11 @@ def split_channels(text: str) -> tuple[str, str]:
     non-empty line and slices that many chars off every line, so a reply opening
     with llama.cpp's usual leading space loses a character per line below it.
     """
-    if not text or _CHANNEL_MARKER not in text:
-        return text.strip(), ""
-    matches = list(_CHANNEL_RE.finditer(text))
+    if not text:
+        return "", ""
+    matches = (list(_CHANNEL_RE.finditer(text)) if _CHANNEL_MARKER in text else [])
     if not matches:
-        return text.strip(), ""
+        return _CONTROL_RE.sub("", text).strip(), ""
 
     visible_parts = [_CONTROL_RE.sub("", text[:matches[0].start()])]
     reasoning_parts = []
@@ -57,7 +75,15 @@ def promote_reasoning(text: str, reasoning: str) -> tuple[str, str]:
     return reasoning, ""
 
 
-def interpret(raw_text: str, raw_reasoning: str) -> tuple[str, str]:
-    """Turn accumulated stream output into what should be shown."""
+def interpret(raw_text: str, raw_reasoning: str,
+              *, streaming: bool = False) -> tuple[str, str]:
+    """Turn accumulated stream output into what should be shown.
+
+    While streaming, a half-arrived marker is held back rather than shown; the
+    next delta either completes it or gives the characters back. The final pass
+    keeps them, so a reply genuinely ending in "<" survives.
+    """
+    if streaming:
+        raw_text = trim_partial_marker(raw_text)
     text, marker_reasoning = split_channels(raw_text)
     return promote_reasoning(text, join_blocks([raw_reasoning, marker_reasoning]))
