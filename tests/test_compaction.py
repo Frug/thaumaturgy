@@ -178,3 +178,27 @@ def test_a_transcript_too_big_for_the_summarizer_is_trimmed_from_the_front():
     assert text.startswith("[") and "earlier turns omitted]" in text.split("\n")[0]
     assert "reply 29" in text          # the newest turns are the ones kept
     assert "user 0" not in text
+
+
+def test_the_recap_budget_comes_from_the_parameter_set(monkeypatch):
+    monkeypatch.setattr(appstate.state, "current_params", {"recap_tokens": 4000})
+    assert compaction.recap_budget(55_000) == 4000        # the setting fits
+    assert compaction.recap_budget(8_192) == 1228         # capped to 15% of a small window
+    monkeypatch.setattr(appstate.state, "current_params", {})
+    assert compaction.recap_budget(100_000) == compaction.RECAP_TOKENS_DEFAULT
+    monkeypatch.setattr(appstate.state, "current_params", {"recap_tokens": "junk"})
+    assert compaction.recap_budget(100_000) == compaction.RECAP_TOKENS_DEFAULT
+    # A tiny window still gets a usable floor rather than a few dozen tokens.
+    monkeypatch.setattr(appstate.state, "current_params", {"recap_tokens": 4000})
+    assert compaction.recap_budget(1024) == compaction.MIN_RECAP_TOKENS
+
+
+def test_a_bigger_recap_budget_keeps_less_verbatim_history(monkeypatch):
+    monkeypatch.setattr(compaction, "window", lambda: 16_384)
+    c = conversation(turns=120, size=400)
+    monkeypatch.setattr(appstate.state, "current_params", {"recap_tokens": 256})
+    small = compaction.plan(c, SCENARIO)
+    monkeypatch.setattr(appstate.state, "current_params", {"recap_tokens": 4000})
+    large = compaction.plan(c, SCENARIO)
+    assert large.budget > small.budget
+    assert large.covers > small.covers   # the recap's room comes out of the tail

@@ -22,7 +22,12 @@ TRIGGER_RATIO = 0.85
 # What the prompt should shrink to. The gap from TRIGGER_RATIO is deliberate:
 # compact rarely and deeply rather than trimming a turn per message.
 TARGET_RATIO = 0.5
-RECAP_RATIO = 0.12          # of the window, spent on the recap itself
+RECAP_TOKENS_DEFAULT = 4000  # when the preset predates the setting
+# No model reports how long a summary it will write, so the budget is a guess
+# the user tunes. Capped as a share of the window because the recap is sent
+# with every later turn: past this it starts crowding out the recent messages
+# it was meant to make room for.
+MAX_RECAP_SHARE = 0.15
 MIN_RECAP_TOKENS = 256
 MIN_KEEP = 4                # messages left verbatim, however big they are
 MIN_FOLD = 4                # fewer than this isn't worth a round trip
@@ -71,6 +76,16 @@ def window() -> int | None:
         return engine.server.context_limit()
     model = engine.server.model or appstate.state.current_model
     return engine.trained_ctx(model) if model else None
+
+
+def recap_budget(total: int) -> int:
+    """How long the recap may run: the parameter set's value, capped to the window."""
+    params = appstate.state.current_params or {}
+    try:
+        wanted = int(params.get("recap_tokens", RECAP_TOKENS_DEFAULT))
+    except (TypeError, ValueError):
+        wanted = RECAP_TOKENS_DEFAULT
+    return max(MIN_RECAP_TOKENS, min(wanted, int(total * MAX_RECAP_SHARE)))
 
 
 def reserve() -> int:
@@ -141,7 +156,7 @@ def plan(chat: Chat | None, scenario: Scenario | None, *, draft: str = "",
     if used + room <= total * TRIGGER_RATIO:
         return None
 
-    budget = max(MIN_RECAP_TOKENS, int(total * RECAP_RATIO))
+    budget = recap_budget(total)
     overhead = engine.estimate_tokens(scenario.context) if scenario else 0
     keep = int(total * TARGET_RATIO) - room - budget - overhead
     summary = chat.active_summary()

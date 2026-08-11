@@ -9,6 +9,7 @@ the detected max context comes from the GGUF metadata.
 from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine, hf_download, store
+from thaumaturgy.lang import en
 
 CACHE_TYPES = ["fp16", "q8_0", "q4_0"]
 CHAT_TEMPLATES = {
@@ -65,14 +66,15 @@ DEFAULT_RUNTIME_TEMPLATE = store.DEFAULT_RUNTIME_TEMPLATE
 # Slider ceiling when the model's block count can't be read.
 FALLBACK_MAX_GPU_LAYERS = 100
 
-# (key, label, min, max, step, decimals)
+# (key, label, min, max, step, decimals, help)
 PARAMS = [
-    ("max_new_tokens", "Max new tokens", 1, 4096, 1, 0),
-    ("temperature", "Temperature", 0.0, 2.0, 0.01, 2),
-    ("top_p", "Top-p", 0.0, 1.0, 0.01, 2),
-    ("top_k", "Top-k", 0, 200, 1, 0),
-    ("min_p", "Min-p", 0.0, 1.0, 0.01, 2),
-    ("repetition_penalty", "Repetition penalty", 1.0, 1.5, 0.01, 2),
+    ("max_new_tokens", "Max new tokens", 1, 4096, 1, 0, ""),
+    ("temperature", "Temperature", 0.0, 2.0, 0.01, 2, ""),
+    ("top_p", "Top-p", 0.0, 1.0, 0.01, 2, ""),
+    ("top_k", "Top-k", 0, 200, 1, 0, ""),
+    ("min_p", "Min-p", 0.0, 1.0, 0.01, 2, ""),
+    ("repetition_penalty", "Repetition penalty", 1.0, 1.5, 0.01, 2, ""),
+    ("recap_tokens", "Recap budget", 256, 8192, 64, 0, en.RECAP_BUDGET_HELP),
 ]
 
 
@@ -80,10 +82,15 @@ def _fmt(decimals: int):
     return (lambda v: f"{float(v):.{decimals}f}") if decimals else (lambda v: f"{int(v)}")
 
 
-def _slider_row(label: str, minv, maxv, step, value, decimals: int, on_change=None):
+def _slider_row(label: str, minv, maxv, step, value, decimals: int, on_change=None,
+                help_text: str = ""):
     """A parameter control: name + live value on top, slider below."""
     with ui.row().classes("w-full items-center justify-between"):
-        ui.label(label).classes("text-sm")
+        with ui.row().classes("items-center gap-1 no-wrap"):
+            ui.label(label).classes("text-sm")
+            if help_text:
+                with ui.icon("help_outline").classes("text-sm text-muted cursor-help"):
+                    ui.tooltip(help_text).classes("max-w-xs text-xs leading-snug")
         val = ui.label().classes("text-sm font-mono text-muted")
     s = ui.slider(min=minv, max=maxv, step=step, value=value, on_change=on_change)
     val.bind_text_from(s, "value", backward=_fmt(decimals))
@@ -973,7 +980,7 @@ def render():
                 with ui.column().classes("w-full gap-2"):
                     ui.label("Generation").classes("text-xs text-muted uppercase tracking-wide")
                     summary_row("Parameter set", state["active"])
-                    for key, label, _minv, _maxv, _step, dec in PARAMS:
+                    for key, label, _minv, _maxv, _step, dec, _help in PARAMS:
                         summary_row(label, _fmt(dec)(params.get(key, PRESETS[DEFAULT_PRESET][key])))
 
                 ui.separator()
@@ -1002,11 +1009,12 @@ def render():
                 name_input.on("blur", commit_rename)
                 name_input.on("keydown.enter", commit_rename)
 
-                for key, label, minv, maxv, step, dec in PARAMS:
+                for key, label, minv, maxv, step, dec, help_text in PARAMS:
                     sliders[key] = _slider_row(label, minv, maxv, step,
                                                vals.get(key, PRESETS[DEFAULT_PRESET][key]),
                                                dec,
-                                               on_change=lambda _e, k=key: on_param_change(k))
+                                               on_change=lambda _e, k=key: on_param_change(k),
+                                               help_text=help_text)
 
                 with ui.expansion("Advanced samplers", icon="tune").classes("w-full"):
                     ui.label(

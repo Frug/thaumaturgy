@@ -24,6 +24,14 @@ COMPACT_STILL_TOO_LONG = ("Still too long after compacting. Shorten the message 
 COMPACT_NOT_NEEDED = "This chat already fits; nothing to do."
 COMPACT_DIVIDER = "Context compacted — {covers} earlier messages summarized"
 
+RECAP_BUDGET_HELP = (
+    "How long a recap may run when a chat is compacted. No model reports how "
+    "long a summary it will write, so this is a ceiling to tune rather than a "
+    "target it will hit. It is capped at 15% of the context window, since the "
+    "recap is resent with every later turn: beyond that it crowds out the "
+    "recent messages it was written to make room for."
+)
+
 # Settings page help.
 COMPACTION_HELP = (
     "When a chat outgrows the model's context window, its oldest turns are "

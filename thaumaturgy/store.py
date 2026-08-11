@@ -455,10 +455,10 @@ def delete_scenario(scenario: dict) -> None:
 # thereafter it's the user's own; edits/renames/deletes all land here.
 
 BUILTIN_PRESETS = {
-    "Default": dict(max_new_tokens=512, temperature=0.8, top_p=0.95, top_k=40, min_p=0.05, repetition_penalty=1.10),
-    "Creative": dict(max_new_tokens=512, temperature=1.10, top_p=0.98, top_k=100, min_p=0.02, repetition_penalty=1.05),
-    "Precise": dict(max_new_tokens=512, temperature=0.40, top_p=0.90, top_k=20, min_p=0.10, repetition_penalty=1.15),
-    "Deterministic": dict(max_new_tokens=512, temperature=0.00, top_p=1.00, top_k=1, min_p=0.00, repetition_penalty=1.00),
+    "Default": dict(max_new_tokens=512, temperature=0.8, top_p=0.95, top_k=40, min_p=0.05, repetition_penalty=1.10, recap_tokens=4000),
+    "Creative": dict(max_new_tokens=512, temperature=1.10, top_p=0.98, top_k=100, min_p=0.02, repetition_penalty=1.05, recap_tokens=4000),
+    "Precise": dict(max_new_tokens=512, temperature=0.40, top_p=0.90, top_k=20, min_p=0.10, repetition_penalty=1.15, recap_tokens=4000),
+    "Deterministic": dict(max_new_tokens=512, temperature=0.00, top_p=1.00, top_k=1, min_p=0.00, repetition_penalty=1.00, recap_tokens=4000),
 }
 DEFAULT_PRESET = "Default"
 CUSTOM = "Custom"
