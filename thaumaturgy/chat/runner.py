@@ -43,6 +43,12 @@ class ChatRun:
         """What the page should currently show for this reply."""
         return self.message.text, self.message.reasoning
 
+    def _render(self, *, streaming: bool) -> None:
+        text, reasoning = reply.interpret(self._raw_text, self._raw_reasoning,
+                                          streaming=streaming)
+        self.message.text = text
+        self.message.reasoning = reasoning
+
     def _persist(self) -> None:
         if self.on_persist is not None:
             self.on_persist()
@@ -63,9 +69,7 @@ class ChatRun:
                     self._raw_reasoning += delta
                 else:
                     self._raw_text += delta
-                text, reasoning = reply.interpret(self._raw_text, self._raw_reasoning)
-                self.message.text = text
-                self.message.reasoning = reasoning
+                self._render(streaming=True)
                 now = time.monotonic()
                 if now - last_save > SAVE_INTERVAL:
                     self._persist()
@@ -75,5 +79,6 @@ class ChatRun:
             self.message.finish_reason = "error"
             self.message.generation_error = str(exc)
         finally:
+            self._render(streaming=False)
             self._persist()
             self.done = True  # last: observers read the chat back once done
