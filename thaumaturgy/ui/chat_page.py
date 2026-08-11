@@ -373,6 +373,7 @@ def render():
         render_messages()
         chat_list.refresh()
         watch()
+        sync_recap_button()
         page["refresh_context"]()
         asyncio.create_task(scroll_bottom_after_render())
 
@@ -428,6 +429,15 @@ def render():
             ui.button("Summarize", icon="compress",
                       on_click=lambda: run_compaction()) \
                 .props("color=primary unelevated")
+
+    with ui.dialog() as recap_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:720px;max-width:92vw"):
+        ui.label("Story so far").classes("text-lg font-semibold")
+        recap_meta = ui.label().classes("text-xs text-muted")
+        with ui.column().classes("w-full overflow-y-auto").style("max-height:60vh"):
+            recap_body = ui.markdown().classes("text-sm leading-relaxed break-words")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Close", on_click=recap_dialog.close).props("flat")
 
     with ui.dialog() as edit_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:720px;max-width:92vw"):
@@ -549,6 +559,22 @@ def render():
         compact_label.text = message
         compact_dialog.open()
 
+    def show_recap():
+        summary = chat.chat.active_summary() if chat.chat else None
+        if summary is None:
+            ui.notify(en.NO_RECAP)
+            return
+        recap_meta.text = (f"Stands in for the first {summary.covers} messages · "
+                           f"{summary.tokens:,} tokens · written {_rel_time(summary.created)}"
+                           + (f" by {_truncate(summary.model, 28)}" if summary.model else ""))
+        recap_body.content = _message_md(summary.text)
+        recap_dialog.open()
+
+    def sync_recap_button():
+        """Only offered when a recap is actually standing in for something."""
+        recap_button.set_visibility(
+            chat.chat is not None and chat.chat.active_summary() is not None)
+
     def set_compacting(active: bool):
         """Shut the composer while the recap generates, and say why."""
         pending_compaction["active"] = active
@@ -643,6 +669,10 @@ def render():
                 .props("outline color=secondary") \
                 .classes("min-h-8 w-full justify-center px-2 py-1 font-mono "
                          "text-[11px] whitespace-normal text-center leading-tight")
+            recap_button = ui.button("View recap", icon="compress",
+                                     on_click=lambda: show_recap()) \
+                .props("flat dense color=secondary").classes("w-full text-xs")
+            recap_button.set_visibility(False)
             with ui.expansion("Details", icon="expand_more") \
                     .props("dense").classes("w-full text-xs text-muted"):
                 context_detail = ui.label().classes(

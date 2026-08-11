@@ -23,6 +23,7 @@ COMPACT_STILL_TOO_LONG = ("Still too long after compacting. Shorten the message 
                           "or start a new chat.")
 COMPACT_NOT_NEEDED = "This chat already fits; nothing to do."
 COMPACT_DIVIDER = "Context compacted — {covers} earlier messages summarized"
+NO_RECAP = "This chat hasn't been compacted, so there is no recap yet."
 
 RECAP_BUDGET_HELP = (
     "How long a recap may run when a chat is compacted. No model reports how "
