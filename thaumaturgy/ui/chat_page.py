@@ -386,7 +386,7 @@ def render():
     pending_delete = {"chat_id": None}
     pending_rename = {"chat_id": None}
     pending_edit = {"chat_id": None, "index": None}
-    pending_compaction = {"draft": ""}
+    pending_compaction = {"draft": "", "active": False}
 
     with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:420px;max-width:92vw"):
@@ -413,10 +413,20 @@ def render():
         ui.label("Compact this chat").classes("text-lg font-semibold")
         compact_label = ui.label().classes("text-sm leading-relaxed")
         ui.label(en.COMPACT_ASK_DETAIL).classes("text-xs text-muted leading-snug")
-        with ui.row().classes("w-full justify-end gap-2"):
+        # The dialog stays up and becomes the progress display: a recap is a
+        # full generation, and the chat has nothing to show until it lands.
+        compact_working = ui.row().classes("w-full items-center gap-3 py-2")
+        with compact_working:
+            ui.spinner(size="lg", color="primary")
+            ui.label(en.COMPACT_RUNNING).classes("text-sm")
+        compact_working.set_visibility(False)
+        compact_buttons = ui.row().classes("w-full justify-end gap-2")
+        with compact_buttons:
             ui.button("Cancel", on_click=compact_dialog.close).props("flat")
+            # Returned, not scheduled: NiceGUI awaits a coroutine result inside
+            # the sender's slot, which is what lets it show anything on screen.
             ui.button("Summarize", icon="compress",
-                      on_click=lambda: asyncio.create_task(run_compaction())) \
+                      on_click=lambda: run_compaction()) \
                 .props("color=primary unelevated")
 
     with ui.dialog() as edit_dialog, ui.card().classes("p-5 gap-3") \
@@ -539,13 +549,37 @@ def render():
         compact_label.text = message
         compact_dialog.open()
 
+    def set_compacting(active: bool):
+        """Shut the composer while the recap generates, and say why."""
+        pending_compaction["active"] = active
+        input_box.set_enabled(not active)
+        send_button.set_enabled(not active)
+        if active:
+            context_counter.text = en.COMPACT_RUNNING
+        else:
+            # Force a recount: a failed run leaves the counts where they were,
+            # and the meter would otherwise sit on "Summarizing…" for good.
+            context_state["signature"] = None
+
     async def run_compaction():
-        compact_dialog.close()
         draft = pending_compaction["draft"]
         pending_compaction["draft"] = ""
-        ui.notify(en.COMPACT_RUNNING)
-        outcome = await run.io_bound(chat.compact, draft)
-        notify(outcome)
+        set_compacting(True)
+        # persistent: a click on the backdrop mid-run would hide the only sign
+        # that anything is happening.
+        compact_dialog.props("persistent")
+        compact_buttons.set_visibility(False)
+        compact_working.set_visibility(True)
+        try:
+            outcome = await run.io_bound(chat.compact, draft)
+        finally:
+            set_compacting(False)
+            compact_working.set_visibility(False)
+            compact_buttons.set_visibility(True)
+            compact_dialog.props(remove="persistent")
+            compact_dialog.close()
+        with msgs_col:  # this coroutine's own slot is the dialog, now closed
+            notify(outcome)
         show_current()
         # The draft never left the composer, so a successful compaction can just
         # carry on with the message that triggered it.
@@ -600,7 +634,7 @@ def render():
                     .props("filled autogrow input-style=max-height:40vh") \
                     .classes("flex-1 tg-field")
                 input_box.on("keydown.ctrl.enter", send)
-                ui.button(icon="send", on_click=send) \
+                send_button = ui.button(icon="send", on_click=send) \
                     .props("color=primary unelevated").classes("h-14 w-14")
 
         with ui.column().classes("h-full w-56 shrink-0 gap-2 p-3 tg-list-shell"):
@@ -627,6 +661,10 @@ def render():
     async def refresh_context_counter():
         if input_box.is_deleted or context_counter.is_deleted:
             context_timer.deactivate()
+            return
+        if pending_compaction["active"]:
+            # Counting means tokenizing through the same server the summarizer
+            # is generating on, and the meter is showing that instead anyway.
             return
         sync_placeholder()
         messages = chat.chat.messages if chat.chat else []
