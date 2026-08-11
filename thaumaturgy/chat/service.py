@@ -33,6 +33,8 @@ class ChatService:
         self.scenario_name: str | None = None
         self._runs: dict[str, ChatRun] = {}
         self._compacting: set[str] = set()
+        # (pass, total) of a running compaction, for the page to show.
+        self.compaction_step: tuple[int, int] | None = None
 
     # ── scenarios ────────────────────────────────────────────────────────────
     def scenarios(self) -> list[Scenario]:
@@ -304,9 +306,12 @@ class ChatService:
         # Shared with the editing service, which refuses to start while the one
         # llama-server is busy.
         appstate.state.generations[chat.id] = {"kind": "compaction"}
+        def progress(step: int, total: int) -> None:
+            self.compaction_step = (step, total)
+
         try:
             summary = compaction.run(
-                chat, self.scenario(), target,
+                chat, self.scenario(), target, on_progress=progress,
                 supports_system_role=engine.server.supports_system_role())
         except Exception as exc:  # noqa: BLE001 - surfaced to the page as an outcome
             if retired is not None:
@@ -314,6 +319,7 @@ class ChatService:
             return Outcome(Step.ERROR, f"Compaction failed: {exc}")
         finally:
             self._compacting.discard(chat.id)
+            self.compaction_step = None
             appstate.state.generations.pop(chat.id, None)
         chat.summaries.append(summary)
         self._save(chat)

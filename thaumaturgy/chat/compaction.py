@@ -8,7 +8,9 @@ Re-compaction is incremental: the input is the previous recap plus the turns
 that have arrived since, so a long chat never re-reads its whole history.
 """
 
+import math
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from thaumaturgy import appstate, engine, store
@@ -33,6 +35,11 @@ MIN_KEEP = 4                # messages left verbatim, however big they are
 MIN_FOLD = 4                # fewer than this isn't worth a round trip
 WORDS_PER_TOKEN = 0.75      # recap budget is stated to the model in words
 MIN_WORDS_SHARE = 0.6       # of the budget, asked for as a floor
+# Transcript one pass is asked to condense. Small enough that the model's own
+# idea of a complete summary still covers it; larger spans get several passes.
+PASS_INPUT_TOKENS = 10_000
+MAX_PASSES = 8              # each is a generation, so this bounds the wait
+MIN_PASS_TOKENS = 300       # a share too small to say anything useful with
 REQUEST_OVERHEAD = 256      # template scaffolding around the summarizer's own prompt
 
 
@@ -238,40 +245,91 @@ def _generate(messages: list[dict], budget: int) -> str:
     return reply.interpret(text, reasoning)[0].strip()
 
 
+def _split_into_passes(messages: list[Message], limit: int) -> list[list[Message]]:
+    """Break the fold into spans small enough for one summary to cover each.
+
+    Sized by what goes in, not by what should come out: a model asked to
+    condense 40,000 tokens writes about as much as one asked to condense 4,000,
+    so the only way to buy detail is to ask more times.
+    """
+    passes, current, spent = [], [], 0
+    for m in messages:
+        size = engine.estimate_tokens(m.text or "")
+        if current and spent + size > limit:
+            passes.append(current)
+            current, spent = [], 0
+        current.append(m)
+        spent += size
+    if current:
+        passes.append(current)
+    if len(passes) <= MAX_PASSES:
+        return passes
+    # Too many for the time they would take: regroup into MAX_PASSES even spans.
+    per = math.ceil(len(messages) / MAX_PASSES)
+    return [messages[i:i + per] for i in range(0, len(messages), per)]
+
+
 def run(chat: Chat, scenario: Scenario | None, target: Plan,
-        supports_system_role: bool = True) -> Summary:
-    """Write the recap for `target`. Blocking: it is a generation of its own."""
+        supports_system_role: bool = True,
+        on_progress: Callable[[int, int], None] | None = None) -> Summary:
+    """Write the recap for `target`. Blocking: these are generations of its own.
+
+    Long folds are summarized in several passes, one span at a time, and the
+    parts are kept in order. The budget is shared between them.
+    """
     doc = store.load_compaction_prompt()
     previous = chat.active_summary()
     carried = ""
     if previous is not None and previous.text.strip():
         carried = (doc["carry"] + "\n" + previous.text.strip())
 
-    room = target.total - target.budget - REQUEST_OVERHEAD \
+    folded = chat.messages[target.start:target.covers]
+    # One generation covers the whole fold, or one per span of it. A model
+    # summarizing 40,000 tokens writes about as much as one summarizing 4,000,
+    # so passes are what buy detail; they cost a generation each.
+    passes = ([folded] if store.compaction_strategy() == "single"
+              else _split_into_passes(folded, PASS_INPUT_TOKENS))
+    # Each pass gets its share of the budget, and its own chance to spend it.
+    budget = max(MIN_PASS_TOKENS, target.budget // len(passes))
+    room = target.total - budget - REQUEST_OVERHEAD \
         - engine.estimate_tokens(doc["system"] + doc["instruction"] + carried)
-    transcript = _transcript(chat.messages[target.start:target.covers], max(room, 512))
-    if not transcript.strip():
-        raise RuntimeError("Those messages have no text to summarize.")
-
-    max_words = int(target.budget * WORDS_PER_TOKEN)
-    ask = _fill(doc["instruction"], {
-        "max_words": str(max_words),
-        # A floor as well as a ceiling: asked only for a maximum, models treat
-        # the task as done long before the budget is anywhere near spent.
-        "min_words": str(max(120, int(max_words * MIN_WORDS_SHARE))),
-        "turns": str(target.folded),
-        "scenario": scenario.name if scenario else "",
-        "recap": carried,
-        "transcript": transcript,
-    })
     system = doc["system"].strip()
-    if supports_system_role:
-        messages = [{"role": "system", "content": system},
-                    {"role": "user", "content": ask}]
-    else:
-        messages = [{"role": "user", "content": f"{system}\n\n{ask}".strip()}]
 
-    text = _generate(messages, target.budget).strip()
+    multi = len(passes) > 1
+    parts, first_turn = [], target.start + 1
+    for index, span in enumerate(passes):
+        if on_progress is not None:
+            on_progress(index + 1, len(passes))
+        transcript = _transcript(span, max(room, 512))
+        last_turn = first_turn + len(span) - 1
+        if not transcript.strip():
+            first_turn = last_turn + 1
+            continue
+        max_words = int(budget * WORDS_PER_TOKEN)
+        ask = _fill(doc["instruction"], {
+            "max_words": str(max_words),
+            # A floor as well as a ceiling: asked only for a maximum, models
+            # treat the task as done long before the budget is near spent.
+            "min_words": str(max(120, int(max_words * MIN_WORDS_SHARE))),
+            "turns": str(len(span)),
+            "scenario": scenario.name if scenario else "",
+            # Only the first pass carries the older recap; the rest continue
+            # from the pass before them, which is already in the same document.
+            "recap": carried if index == 0 else "",
+            "transcript": transcript,
+        })
+        if supports_system_role:
+            messages = [{"role": "system", "content": system},
+                        {"role": "user", "content": ask}]
+        else:
+            messages = [{"role": "user", "content": f"{system}\n\n{ask}".strip()}]
+        part = _generate(messages, budget).strip()
+        if part:
+            parts.append(f"## Turns {first_turn}-{last_turn}\n\n{part}"
+                         if multi else part)
+        first_turn = last_turn + 1
+
+    text = "\n\n".join(parts).strip()
     if not text:
         raise RuntimeError("The model returned an empty recap.")
     tokens, _ = engine.server.count_tokens(text)

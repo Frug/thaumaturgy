@@ -244,3 +244,36 @@ def test_compaction_can_be_forced_before_the_window_is_full(monkeypatch):
     assert compaction.plan(c, SCENARIO) is None
     forced = compaction.plan(c, SCENARIO, force=True)
     assert forced is not None and forced.possible
+
+
+def test_the_strategy_setting_chooses_one_pass_or_several(monkeypatch):
+    calls = []
+
+    def capture(messages, budget):
+        calls.append(budget)
+        return f"part {len(calls)}"
+
+    monkeypatch.setattr(compaction, "_generate", capture)
+    c = conversation(turns=200, size=1200)   # well past one pass worth of input
+    target = compaction.Plan(start=0, covers=300, used=60_000, total=100_000,
+                             budget=4000)
+
+    store.save_compaction_strategy("single")
+    summary = compaction.run(c, SCENARIO, target)
+    assert len(calls) == 1 and calls[0] == 4000
+    assert "## Turns" not in summary.text          # no part headings for one pass
+
+    calls.clear()
+    store.save_compaction_strategy("passes")
+    summary = compaction.run(c, SCENARIO, target)
+    assert len(calls) > 1
+    assert sum(calls) <= 4000 + len(calls)         # the budget is shared out
+    assert "## Turns 1-" in summary.text           # parts kept in order
+    store.save_compaction_strategy("single")
+
+
+def test_passes_are_capped_so_a_huge_fold_still_finishes(monkeypatch):
+    monkeypatch.setattr(compaction, "PASS_INPUT_TOKENS", 100)
+    spans = compaction._split_into_passes(conversation(turns=400).messages, 100)
+    assert len(spans) <= compaction.MAX_PASSES
+    assert sum(len(s) for s in spans) == 801       # every message lands in one

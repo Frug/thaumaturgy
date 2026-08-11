@@ -31,6 +31,21 @@ def render() -> None:
                 .classes("text-sm")
             ui.label(en.COMPACTION_HELP).classes("text-xs text-muted leading-snug")
 
+            def set_strategy(value: str) -> None:
+                store.save_compaction_strategy(value)
+                ui.notify("Recaps written in " + ("several passes"
+                          if value == "passes" else "one pass"), type="positive")
+
+            ui.label("Recap detail").classes(
+                "text-xs text-muted uppercase tracking-wide mt-3")
+            ui.radio({"single": "One pass — fastest",
+                      "passes": "Several passes — more detail, slower"},
+                     value=store.compaction_strategy(),
+                     on_change=lambda e: set_strategy(e.value)) \
+                .props("dense").classes("text-sm")
+            ui.label(en.COMPACTION_STRATEGY_HELP).classes(
+                "text-xs text-muted leading-snug")
+
         with ui.column().classes("tg-pset-box w-full gap-2"):
             ui.label("Diagnostic logs").classes(
                 "text-xs text-muted uppercase tracking-wide")

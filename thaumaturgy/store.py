@@ -323,6 +323,23 @@ def save_compaction_divider(show: bool) -> None:
     save_app_config(config)
 
 
+# How a fold is summarized: in one generation, or one per span of it.
+COMPACTION_STRATEGIES = ("single", "passes")
+DEFAULT_COMPACTION_STRATEGY = "single"
+
+
+def compaction_strategy() -> str:
+    value = load_app_config().get("compaction_strategy")
+    return value if value in COMPACTION_STRATEGIES else DEFAULT_COMPACTION_STRATEGY
+
+
+def save_compaction_strategy(strategy: str) -> None:
+    config = load_app_config()
+    config["compaction_strategy"] = (
+        strategy if strategy in COMPACTION_STRATEGIES else DEFAULT_COMPACTION_STRATEGY)
+    save_app_config(config)
+
+
 # ── Compaction prompt (<data>/compaction.yaml) ──────────────────────────────
 # How a chat's older turns get condensed once it outgrows the context window.
 # Seeded on first read so it can be edited like any other data file.

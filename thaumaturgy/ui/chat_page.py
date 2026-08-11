@@ -427,7 +427,7 @@ def render():
         compact_working = ui.row().classes("w-full items-center gap-3 py-2")
         with compact_working:
             ui.spinner(size="lg", color="primary")
-            ui.label(en.COMPACT_RUNNING).classes("text-sm")
+            compact_progress = ui.label(en.COMPACT_RUNNING).classes("text-sm")
         compact_working.set_visibility(False)
         compact_buttons = ui.row().classes("w-full justify-end gap-2")
         with compact_buttons:
@@ -631,10 +631,18 @@ def render():
         compact_dialog.props("persistent")
         compact_buttons.set_visibility(False)
         compact_working.set_visibility(True)
+        compact_progress.text = en.COMPACT_RUNNING
+        # A long fold is several generations; without this the spinner gives no
+        # sign of which one it is on.
+        ticker = ui.timer(0.4, lambda: compact_progress.set_text(
+            en.COMPACT_RUNNING if chat.compaction_step is None
+            else en.COMPACT_PASS.format(step=chat.compaction_step[0],
+                                        total=chat.compaction_step[1])))
         try:
             outcome = await run.io_bound(
                 lambda: chat.compact(draft, force=force, redo=redo))
         finally:
+            ticker.deactivate()
             set_compacting(False)
             compact_working.set_visibility(False)
             compact_buttons.set_visibility(True)

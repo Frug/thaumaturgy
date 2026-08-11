@@ -24,6 +24,7 @@ COMPACT_REDO_ASK = ("Write the recap again over the same {covers} messages, "
                     "replacing the current one? Use this after changing the "
                     "recap budget or the instructions in compaction.yaml.")
 COMPACT_RUNNING = "Summarizing the earlier messages…"
+COMPACT_PASS = "Summarizing part {step} of {total}…"
 COMPACT_DONE = "Folded {folded} messages into a recap."
 COMPACT_STILL_TOO_LONG = ("Still too long after compacting. Shorten the message "
                           "or start a new chat.")
@@ -47,6 +48,15 @@ COMPACTION_HELP = (
     "over and can be opened to read it. How the recap is written is set in "
     "compaction.yaml in the data directory."
 )
+COMPACTION_STRATEGY_HELP = (
+    "A model asked to condense 40,000 tokens writes about as much as one asked "
+    "to condense 4,000, so a single pass over a long chat loses most of the "
+    "detail. Several passes summarize it a span at a time and keep the parts in "
+    "order, spending the whole recap budget instead of a fraction of it. Each "
+    "pass is a generation of its own, so a long chat can take minutes, and the "
+    "result reads as sections rather than continuous prose."
+)
+
 LOG_HELP = (
     "Off by default. When set, llama-server's output is mirrored to "
     "llama-server.log and each editing attempt is appended to editing.jsonl. "

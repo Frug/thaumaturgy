@@ -63,6 +63,13 @@ target: models stop when they judge the summary complete, so the recap is
 usually shorter. The recap instructions live in `compaction.yaml` in the data
 dir and can be edited; an unedited file picks up new defaults automatically.
 
+**Recap detail** on the Settings page chooses how the recap is written. One pass
+is a single generation over the whole fold; several passes summarize it a span
+at a time and keep the parts in order. Passes exist because a model asked to
+condense 40,000 tokens writes about as much as one asked to condense 4,000, so
+a single pass over a long chat spends only a fraction of the recap budget. Each
+pass is its own generation, so it trades minutes for detail.
+
 The chat's Context panel breaks down what the model is being sent, jumps to the
 point in the transcript where the recap takes over, shows the recap itself, and
 compacts on demand — **Compact now** on an uncompacted chat, **Redo recap** to
