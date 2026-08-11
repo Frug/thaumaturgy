@@ -162,6 +162,11 @@ def max_gpu_layers(model_name: str) -> int | None:
     return blocks + 1 if blocks is not None else None
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough token count for text no tokenizer is available for."""
+    return max(1, math.ceil(len(text) / 4))
+
+
 def _free_port() -> int:
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -412,10 +417,6 @@ class LlamaServer:
         return None
 
     @staticmethod
-    def _estimate_tokens(text: str) -> int:
-        return max(1, math.ceil(len(text) / 4))
-
-    @staticmethod
     def _error_message(response) -> str:
         """Pull llama-server's rejection reason out of an error response body.
 
@@ -467,7 +468,7 @@ class LlamaServer:
                 except (requests.RequestException, ValueError, TypeError):
                     pass
 
-        return self._estimate_tokens(prompt), False
+        return estimate_tokens(prompt), False
 
     def count_tokens(self, text: str) -> tuple[int, bool]:
         """Token count for raw text, with exactness flag.
@@ -488,7 +489,7 @@ class LlamaServer:
                         return count, True
                 except (requests.RequestException, ValueError, TypeError):
                     pass
-        return self._estimate_tokens(text), False
+        return estimate_tokens(text), False
 
     def thinking_enabled(self) -> bool:
         """Whether the loaded model is expected to emit reasoning."""

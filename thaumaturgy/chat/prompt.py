@@ -14,24 +14,33 @@ def _prepend_to_first_user(messages: list[dict], prefix: str) -> list[dict]:
 
 
 def build(chat: Chat, scenario: Scenario | None, *, draft: str = "",
-          supports_system_role: bool = True) -> list[dict]:
+          supports_system_role: bool = True, compacted: bool = True) -> list[dict]:
     """Assemble the request body's messages, including any unsent `draft`.
 
     The draft is folded in here rather than appended by the caller: without a
     system role the scenario merges into the first user turn, which may be the
     draft itself.
+
+    With `compacted`, an active recap replaces the messages it covers; pass
+    False to size the conversation as the user sees it, in full.
     """
     system_parts = []
     if scenario is not None and scenario.context.strip():
         system_parts.append(scenario.context.strip())
 
     history = list(chat.messages)
+    summary = chat.active_summary() if compacted else None
+    if summary is not None:
+        history = history[summary.covers:]
+        system_parts.append(f"Story so far:\n{summary.text.strip()}")
+
     # Gemma-style templates raise on a leading assistant turn and no capability
     # flag reports it, so an opening line always moves into the prompt.
+    lead_in = "Opening scene" if summary is None else "Most recent scene"
     while history and history[0].role is not Role.USER:
         opening = (history.pop(0).text or "").strip()
         if opening:
-            system_parts.append(f"Opening scene:\n{opening}")
+            system_parts.append(f"{lead_in}:\n{opening}")
 
     messages = []
     for m in history:

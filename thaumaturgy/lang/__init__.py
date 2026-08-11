@@ -1,8 +1,8 @@
 """User-facing wording, kept out of the code that shows it.
 
-One module per language; `en` is the only one so far. Only strings shown from
-more than one place live here; a message with a single call site reads better
-where it is used.
+One module per language; `en` is the only one so far. Prose the user reads
+lives here rather than inline: guards, page help, and anything a service words
+for a page to show.
 """
 
 from thaumaturgy.lang import en

@@ -47,6 +47,23 @@ examples live in `thaumaturgy/defaults/scenarios/` and are copied into
 local scenarios and can be edited or deleted in the UI. The whole `data/`
 directory is gitignored, so those local changes do not show up as Git changes.
 
+## Long Chats
+
+A chat that outgrows the model's context window stops and offers to compact
+itself: its oldest turns are summarized into a recap, and the model is sent that
+recap in their place. Nothing is removed from the chat — the transcript stays
+whole in `chats/*.json` and in the UI, alongside a `summaries` entry recording
+which messages the recap stands for. Editing a message the recap covers retires
+it, and the next reply offers to write a fresh one.
+
+How long a recap may run is **Recap budget** in the parameter set on the Model
+page (default 4000 tokens, capped at 15% of the context window so the recap
+cannot crowd out the recent messages it made room for). It is a ceiling, not a
+target: models stop when they judge the summary complete, so the recap is
+usually shorter. The recap instructions live in `compaction.yaml` in the data
+dir and can be edited. Whether the chat draws a divider where the recap takes
+over is a Settings-page toggle.
+
 ## Credits
 
 thaumaturgy is a derivative work of

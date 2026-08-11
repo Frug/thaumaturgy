@@ -9,7 +9,7 @@ One instance for the process, like engine.server.
 from enum import StrEnum, auto
 
 from thaumaturgy import appstate, engine, store
-from thaumaturgy.chat import prompt
+from thaumaturgy.chat import compaction, prompt
 from thaumaturgy.chat.models import Chat, Message, Role, Scenario
 from thaumaturgy.chat.runner import ChatRun
 from thaumaturgy.lang import en
@@ -21,6 +21,7 @@ class Step(StrEnum):
     BLOCKED = auto()   # no model, or this chat is already generating
     UPDATED = auto()   # state changed, nothing generating
     IDLE = auto()      # nothing open
+    COMPACT_REQUIRED = auto()  # won't fit until older turns are folded into a recap
     ERROR = auto()
 
 
@@ -31,6 +32,7 @@ class ChatService:
         self.chat: Chat | None = None
         self.scenario_name: str | None = None
         self._runs: dict[str, ChatRun] = {}
+        self._compacting: set[str] = set()
 
     # ── scenarios ────────────────────────────────────────────────────────────
     def scenarios(self) -> list[Scenario]:
@@ -90,7 +92,7 @@ class ChatService:
         return self._adopt(chat)
 
     def delete(self, chat_id: str) -> Outcome:
-        if self.run_for(chat_id) is not None:
+        if self._occupied(chat_id):
             return Outcome(Step.BLOCKED,
                            "Wait for generation to finish before deleting this chat.")
         was_open = self.chat is not None and self.chat.id == chat_id
@@ -102,7 +104,7 @@ class ChatService:
     def rename(self, chat_id: str, title: str) -> Outcome:
         # Blocked mid-reply like delete is: the run holds its own Chat object
         # and would write the derived title back over this one.
-        if self.run_for(chat_id) is not None:
+        if self._occupied(chat_id):
             return Outcome(Step.BLOCKED,
                            "Wait for generation to finish before renaming this chat.")
         if not store.rename_chat(chat_id, title):
@@ -129,8 +131,15 @@ class ChatService:
         return self._runs.get(self.chat.id) if self.chat else None
 
     def busy(self, chat_id: str | None = None) -> bool:
-        run = self._runs.get(chat_id or (self.chat.id if self.chat else ""))
+        chat_id = chat_id or (self.chat.id if self.chat else "")
+        if chat_id in self._compacting:
+            return True
+        run = self._runs.get(chat_id)
         return run is not None and not run.done
+
+    def _occupied(self, chat_id: str) -> bool:
+        """Mid-reply or mid-recap: something else is writing to this chat."""
+        return chat_id in self._compacting or self.run_for(chat_id) is not None
 
     def _finish(self, chat_id: str) -> None:
         self._runs.pop(chat_id, None)
@@ -157,6 +166,17 @@ class ChatService:
         run.start()
         return Outcome(Step.STARTED)
 
+    def _room_for_reply(self, draft: str = "") -> Outcome | None:
+        """Refuse a reply the window can't hold, naming the way out of it."""
+        target = self.plan_compaction(draft)
+        if target is None:
+            return None
+        if not target.possible:
+            return Outcome(Step.BLOCKED, en.CHAT_TOO_LONG)
+        return Outcome(Step.COMPACT_REQUIRED,
+                       en.COMPACT_ASK.format(used=target.used, total=target.total,
+                                             folded=target.folded))
+
     def send(self, text: str) -> Outcome:
         if not engine.server.running:
             return Outcome(Step.BLOCKED, en.NO_MODEL)
@@ -168,6 +188,11 @@ class ChatService:
             # A second worker on the same chat would interleave its writes with
             # the first's and evict it from the registry.
             return Outcome(Step.BLOCKED, en.CHAT_BUSY)
+        # Before the message is appended: nothing is saved if this refuses, so
+        # the draft stays in the composer for the user to compact or edit.
+        blocked = self._room_for_reply(text)
+        if blocked is not None:
+            return blocked
         self.chat.append(Message(role=Role.USER, name="You", text=text))
         self._save()
         return self._reply()
@@ -179,6 +204,9 @@ class ChatService:
             return Outcome(Step.BLOCKED, en.NO_MODEL)
         if self.busy(self.chat.id):
             return Outcome(Step.BLOCKED, en.CHAT_BUSY)
+        blocked = self._room_for_reply()
+        if blocked is not None:
+            return blocked
         index = self.chat.latest_assistant_index()
         if index is None:
             return Outcome(Step.BLOCKED,
@@ -236,17 +264,57 @@ class ChatService:
         index = self.chat.latest_assistant_index()
         return self.chat.messages[index] if index is not None else None
 
+    # ── compaction ───────────────────────────────────────────────────────────
+    def plan_compaction(self, draft: str = "") -> compaction.Plan | None:
+        return compaction.plan(
+            self.chat, self.scenario(), draft=draft,
+            supports_system_role=engine.server.supports_system_role())
+
+    def compact(self, draft: str = "") -> Outcome:
+        """Fold this chat's oldest turns into a recap.
+
+        Blocks for as long as the summary takes to generate, so callers run it
+        off the event loop. The plan is recomputed here rather than taken from
+        whatever the page last saw, which may be several turns old.
+        """
+        if self.chat is None:
+            return Outcome(Step.IDLE)
+        if not engine.server.running:
+            return Outcome(Step.BLOCKED, en.NO_MODEL)
+        if self.busy(self.chat.id):
+            return Outcome(Step.BLOCKED, en.CHAT_BUSY)
+        target = self.plan_compaction(draft)
+        if target is None:
+            return Outcome(Step.UPDATED, en.COMPACT_NOT_NEEDED)
+        if not target.possible:
+            return Outcome(Step.BLOCKED, en.CHAT_TOO_LONG)
+
+        chat = self.chat
+        self._compacting.add(chat.id)
+        # Shared with the editing service, which refuses to start while the one
+        # llama-server is busy.
+        appstate.state.generations[chat.id] = {"kind": "compaction"}
+        try:
+            summary = compaction.run(
+                chat, self.scenario(), target,
+                supports_system_role=engine.server.supports_system_role())
+        except Exception as exc:  # noqa: BLE001 - surfaced to the page as an outcome
+            return Outcome(Step.ERROR, f"Compaction failed: {exc}")
+        finally:
+            self._compacting.discard(chat.id)
+            appstate.state.generations.pop(chat.id, None)
+        chat.summaries.append(summary)
+        self._save(chat)
+        return Outcome(Step.UPDATED, en.COMPACT_DONE.format(folded=target.folded))
+
     # ── context meter ────────────────────────────────────────────────────────
-    def context_messages(self, draft: str = "") -> list[dict]:
-        chat = self.chat or Chat(id="")
-        return prompt.build(chat, self.scenario(), draft=draft,
-                            supports_system_role=engine.server.supports_system_role())
+    def context_report(self, draft: str = "") -> compaction.Report:
+        return compaction.report(
+            self.chat, self.scenario(), draft,
+            supports_system_role=engine.server.supports_system_role())
 
     def context_total(self) -> int | None:
-        if engine.server.n_ctx:
-            return engine.server.n_ctx
-        model = engine.server.model or appstate.state.current_model
-        return engine.trained_ctx(model) if model else None
+        return compaction.window()
 
 
 chat = ChatService()
