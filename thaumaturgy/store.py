@@ -95,7 +95,12 @@ def new_chat(scenario: str | None, model: str | None,
 
 def save_chat(chat: dict) -> None:
     chat["updated"] = time.time()
-    chat["title"] = _title_from(chat.get("messages", []))
+    if not chat.get("title_custom"):
+        chat["title"] = _title_from(chat.get("messages", []))
+    _write_chat(chat)
+
+
+def _write_chat(chat: dict) -> None:
     target = _chat_path(chat["id"], chat.get("scenario"))
     # Stale copies only exist right after a chat moves, and this runs twice a
     # second while streaming, so skip the tree walk once it's settled.
@@ -131,6 +136,21 @@ def list_chats(scenario: str | None = None) -> list[dict]:
             out.append(c)
     out.sort(key=lambda c: c.get("updated", 0), reverse=True)
     return out
+
+
+def rename_chat(chat_id: str, title: str) -> bool:
+    """Give a chat a title of its own, one save_chat won't derive away.
+
+    Leaves "updated" alone: a rename shouldn't reorder the sidebar.
+    """
+    chat = load_chat(chat_id)
+    title = (title or "").strip()
+    if chat is None or not title:
+        return False
+    chat["title"] = title
+    chat["title_custom"] = True
+    _write_chat(chat)
+    return True
 
 
 def delete_chat(chat_id: str) -> None:
@@ -256,6 +276,39 @@ def save_last_loaded_model(model_name: str | None) -> None:
 def last_loaded_model() -> str | None:
     model = load_app_config().get("last_loaded_model")
     return model if isinstance(model, str) and model else None
+
+
+def save_last_scenario(name: str | None) -> None:
+    config = load_app_config()
+    if name:
+        config["last_scenario"] = name
+    else:
+        config.pop("last_scenario", None)
+    save_app_config(config)
+
+
+def last_scenario() -> str | None:
+    name = load_app_config().get("last_scenario")
+    return name if isinstance(name, str) and name else None
+
+
+def log_dir_setting() -> str:
+    """The configured diagnostic-log directory, or "" when logging is off."""
+    value = load_app_config().get("log_dir")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def save_log_dir(path: str | None) -> None:
+    from thaumaturgy import paths
+
+    config = load_app_config()
+    path = (path or "").strip()
+    if path:
+        config["log_dir"] = path
+    else:
+        config.pop("log_dir", None)
+    save_app_config(config)
+    paths.reset_log_dir()
 
 
 # ── Scenarios (one YAML file each under <data>/scenarios/) ──────────────────
@@ -397,7 +450,10 @@ DEFAULT_REASONING_BUDGET_MESSAGE = "Let me stop thinking and answer now."
 
 DEFAULT_CACHE_RAM = 0
 DEFAULT_CTX_CHECKPOINTS = 2
-DEFAULT_PARALLEL_SLOTS = 2
+# One slot: llama.cpp splits -c evenly across slots. Each slot takes an even
+# portion of context size. With one slot, a reply in a second chat waits for the
+# first to finish instead of streaming alongside it.
+DEFAULT_PARALLEL_SLOTS = 1
 
 BUILTIN_RUNTIME_TEMPLATES = {
     "Default": dict(

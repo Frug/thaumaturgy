@@ -60,6 +60,43 @@ def _soften_indent(text: str) -> str:
     return "\n".join(out)
 
 
+_QUOTED_RE = re.compile(r'"[^"\n]+"|“[^”\n]+”')
+_CODE_SPAN_RE = re.compile(r"`+[^`]*`+")
+
+
+def _mark_quotes(text: str) -> str:
+    """Tag quoted runs with .tg-quote so dialogue can be styled apart from prose.
+
+    Only balanced pairs on one line, and never inside code: an opening quote
+    still being streamed would otherwise take the rest of the message with it.
+    """
+    out, fenced = [], False
+    for line in text.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append(line)
+            continue
+        if fenced or ('"' not in line and "“" not in line):
+            out.append(line)
+            continue
+        pieces, last = [], 0
+        for code in _CODE_SPAN_RE.finditer(line):
+            pieces.append(_QUOTED_RE.sub(_wrap_quote, line[last:code.start()]))
+            pieces.append(code.group())
+            last = code.end()
+        pieces.append(_QUOTED_RE.sub(_wrap_quote, line[last:]))
+        out.append("".join(pieces))
+    return "\n".join(out)
+
+
+def _wrap_quote(match: re.Match) -> str:
+    return f'<span class="tg-quote">{match.group()}</span>'
+
+
+def _message_md(text: str) -> str:
+    return _mark_quotes(_soften_indent(text))
+
+
 def _context_label(used: int | None, total: int | None, exact: bool = True) -> str:
     if used is None:
         return "Context --"
@@ -93,17 +130,17 @@ class _MessageView:
         return self.text_md.is_deleted
 
     def update(self, text: str, reasoning: str) -> None:
-        self.text_md.content = _soften_indent(text)
+        self.text_md.content = _message_md(text)
         if self.reasoning_box is None:
             return
-        self.reasoning_md.content = _soften_indent(reasoning)
+        self.reasoning_md.content = _message_md(reasoning)
         self.reasoning_box.set_visibility(bool(reasoning.strip()))
 
 
-def _message(m: Message, on_scenario_click=None) -> _MessageView:
+def _message(m: Message, on_scenario_click=None, on_edit=None) -> _MessageView:
     """Render one message row; returns handles to it (for live updates)."""
     clickable = (not m.is_user) and on_scenario_click is not None
-    with ui.row().classes("w-full gap-3 no-wrap items-start pb-4"):
+    with ui.row().classes("w-full gap-3 no-wrap items-start pb-4 tg-msg"):
         col = ui.column().classes("items-center gap-1 w-16 shrink-0")
         if clickable:
             col.classes("cursor-pointer hover:opacity-80")
@@ -118,19 +155,23 @@ def _message(m: Message, on_scenario_click=None) -> _MessageView:
             bubble.style("background: rgba(52,97,140,0.10)")
         with bubble:
             text, reasoning = m.display()
-            md = ui.markdown(_soften_indent(text)).classes(
+            md = ui.markdown(_message_md(text)).classes(
                 "text-sm leading-relaxed break-words")
             box = reasoning_md = None
             if not m.is_user:
                 box = ui.expansion("Thinking", icon="psychology").classes("w-full")
                 with box:
-                    reasoning_md = ui.markdown(_soften_indent(reasoning)).classes(
+                    reasoning_md = ui.markdown(_message_md(reasoning)).classes(
                         "text-xs leading-relaxed break-words text-muted")
                 box.set_visibility(bool(reasoning))
             warning = m.warning()
             if warning:
                 ui.badge(warning).props("color=warning text-color=dark") \
                     .classes("self-start text-xs mt-1")
+            if on_edit is not None:
+                with ui.row().classes("w-full justify-end tg-msg-actions"):
+                    ui.button("Edit", icon="edit", on_click=on_edit) \
+                        .props("flat dense color=secondary").classes("text-xs")
     return _MessageView(md, box, reasoning_md)
 
 
@@ -139,7 +180,11 @@ def render():
     scenarios = chat.scenarios()
     names = [s.name for s in scenarios]
     if chat.scenario_name not in names:
-        chat.scenario_name = names[0] if names else None
+        # appstate carries the scenario last selected, restored from disk on
+        # startup; it may name one that has since been renamed or deleted.
+        remembered = appstate.state.current_scenario
+        chat.scenario_name = remembered if remembered in names \
+            else (names[0] if names else None)
         appstate.state.current_scenario = chat.scenario_name
     page: dict = {"inner": None, "stream_view": None, "observed": None,
                   "refresh_context": lambda: None}
@@ -212,7 +257,10 @@ def render():
                 regenerate_index = (None if streaming
                                     else chat.chat.latest_assistant_index())
                 for i, m in enumerate(chat.chat.messages):
-                    view = _message(m, on_scenario_click=open_scenario)
+                    on_edit = (None if streaming or not m.is_user
+                               else lambda idx=i: edit_user_message(idx))
+                    view = _message(m, on_scenario_click=open_scenario,
+                                    on_edit=on_edit)
                     if streaming and run_ is not None and i == run_.index:
                         page["stream_view"] = view
                     if i == regenerate_index:
@@ -306,7 +354,8 @@ def render():
         apply(chat.open(chat_id))
 
     pending_delete = {"chat_id": None}
-    pending_edit = {"chat_id": None}
+    pending_rename = {"chat_id": None}
+    pending_edit = {"chat_id": None, "index": None}
 
     with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:420px;max-width:92vw"):
@@ -317,14 +366,25 @@ def render():
                       on_click=lambda: (delete_dialog.close(), delete_pending_chat())) \
                 .props("color=negative unelevated")
 
+    with ui.dialog() as rename_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:420px;max-width:92vw"):
+        ui.label("Rename chat").classes("text-lg font-semibold")
+        rename_input = ui.input(label="Chat name").classes("w-full tg-field") \
+            .props("filled autofocus")
+        rename_input.on("keydown.enter", lambda: save_renamed_chat())
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=rename_dialog.close).props("flat")
+            ui.button("Save", icon="save", on_click=lambda: save_renamed_chat()) \
+                .props("color=primary unelevated")
+
     with ui.dialog() as edit_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:720px;max-width:92vw"):
-        ui.label("Edit Response").classes("text-lg font-semibold")
+        edit_title = ui.label("Edit Response").classes("text-lg font-semibold")
         edit_box = ui.textarea().props("filled autogrow input-style=max-height:60vh") \
             .classes("w-full tg-field")
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("Cancel", on_click=edit_dialog.close).props("flat")
-            ui.button("Save", icon="save", on_click=lambda: save_edited_response()) \
+            ui.button("Save", icon="save", on_click=lambda: save_edit()) \
                 .props("color=primary unelevated")
 
     def ask_delete_chat(raw: dict):
@@ -339,25 +399,63 @@ def render():
             apply(chat.delete(chat_id))
         pending_delete["chat_id"] = None
 
+    def ask_rename_chat(raw: dict):
+        pending_rename["chat_id"] = raw["id"]
+        rename_input.value = raw.get("title") or "New chat"
+        rename_dialog.open()
+
+    def save_renamed_chat():
+        chat_id = pending_rename["chat_id"]
+        title = (rename_input.value or "").strip()
+        if not chat_id or not title:
+            return
+        outcome = chat.rename(chat_id, title)
+        if outcome.step is Step.BLOCKED:
+            notify(outcome)  # the dialog stays open, so the name isn't lost
+            return
+        rename_dialog.close()
+        pending_rename["chat_id"] = None
+        apply(outcome)
+
     def edit_last_response():
         message = chat.editable_reply()
         if message is None or chat.busy():
             notify(chat.edit_last(""))  # reuses the service's own guard messages
             return
         pending_edit["chat_id"] = chat.chat.id
+        pending_edit["index"] = None  # None = the latest reply
+        edit_title.text = "Edit Response"
         edit_box.value = message.text
         edit_dialog.open()
 
-    def save_edited_response():
+    def edit_user_message(index: int):
+        if chat.chat is None:
+            return
+        if chat.busy():
+            notify(chat.edit_message(index, ""))  # reuses the service's own guard
+            return
+        pending_edit["chat_id"] = chat.chat.id
+        pending_edit["index"] = index
+        edit_title.text = "Edit Message"
+        edit_box.value = chat.chat.messages[index].text
+        edit_dialog.open()
+
+    def save_edit():
         if pending_edit["chat_id"] != (chat.chat.id if chat.chat else None):
             edit_dialog.close()
             return
-        outcome = chat.edit_last(edit_box.value or "")
+        index = pending_edit["index"]
+        if index is None:
+            outcome = chat.edit_last(edit_box.value or "")
+        else:
+            outcome = chat.edit_message(
+                index, _normalize_user_markdown(edit_box.value or ""))
         if outcome.step is Step.BLOCKED:
             notify(outcome)
             return
         edit_dialog.close()
         pending_edit["chat_id"] = None
+        pending_edit["index"] = None
         apply(outcome)
 
     def new_chat():
@@ -397,21 +495,28 @@ def render():
                     ui.label(raw.get("title") or "New chat") \
                         .classes("font-medium text-sm ellipsis w-full")
                     ui.label(_rel_time(raw.get("updated"))).classes("text-xs text-muted")
-                with item, ui.item_section().props("side").classes("tg-chat-delete-section"):
-                    ui.button(icon="delete", on_click=lambda r=raw: ask_delete_chat(r)) \
+                with item, ui.item_section().props("side").classes("tg-chat-menu-section"):
+                    menu_btn = ui.button(icon="more_vert") \
                         .props("flat round dense size=sm text-color=white") \
-                        .classes("tg-chat-delete").tooltip("Delete chat")
+                        .classes("tg-chat-menu")
+                    # Without this the click reaches the row and opens the chat.
+                    menu_btn.on("click.stop", lambda: None)
+                    with menu_btn, ui.menu().props("auto-close"):
+                        ui.menu_item("Rename", on_click=lambda r=raw: ask_rename_chat(r))
+                        ui.menu_item("Delete", on_click=lambda r=raw: ask_delete_chat(r))
 
     # ── Layout: sidebar + main ───────────────────────────────────────────────
     with ui.row().classes("w-full gap-4 no-wrap").style("height: calc(100vh - 7rem)"):
-        with ui.column().classes("h-full w-64 shrink-0 gap-2 no-wrap"):
+        with ui.column().classes("h-full shrink-0 gap-2 no-wrap") \
+                .style("width: 17.6rem"):
             ui.select(options=names, value=chat.scenario_name, label="Scenario",
                       on_change=lambda e: on_scenario_change(e.value)) \
                 .props("filled").classes("w-full tg-field")
-            ui.button("New chat", icon="add", on_click=new_chat) \
-                .props("color=positive unelevated").classes("w-full")
+            ui.label("CHATS").classes("text-xs text-muted tracking-wide")
             with ui.scroll_area().classes("flex-1 w-full min-h-0 tg-list-shell"):
                 chat_list()
+            ui.button("New chat", icon="add", on_click=new_chat) \
+                .props("color=positive unelevated").classes("w-full")
 
         with ui.column().classes("h-full flex-1 min-w-0 no-wrap gap-2"):
             with ui.scroll_area().classes("flex-1 w-full") as transcript_scroll:

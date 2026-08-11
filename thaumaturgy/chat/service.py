@@ -45,6 +45,7 @@ class ChatService:
     def select_scenario(self, name: str | None) -> Outcome:
         self.scenario_name = name
         appstate.state.current_scenario = name
+        store.save_last_scenario(name)
         return self.open_first(name)
 
     # ── chats ────────────────────────────────────────────────────────────────
@@ -96,6 +97,19 @@ class ChatService:
         store.delete_chat(chat_id)
         if was_open:
             return self.open_first(self.scenario_name)
+        return Outcome(Step.UPDATED)
+
+    def rename(self, chat_id: str, title: str) -> Outcome:
+        # Blocked mid-reply like delete is: the run holds its own Chat object
+        # and would write the derived title back over this one.
+        if self.run_for(chat_id) is not None:
+            return Outcome(Step.BLOCKED,
+                           "Wait for generation to finish before renaming this chat.")
+        if not store.rename_chat(chat_id, title):
+            return Outcome(Step.ERROR, "That chat could not be renamed.")
+        if self.chat is not None and self.chat.id == chat_id:
+            self.chat.title = title.strip()
+            self.chat.title_custom = True
         return Outcome(Step.UPDATED)
 
     def _save(self, chat: Chat | None = None) -> None:
@@ -196,6 +210,23 @@ class ChatService:
         message = self.chat.messages[index]
         message.text = text
         message.clear_generation_state()
+        self._save()
+        return Outcome(Step.UPDATED)
+
+    def edit_message(self, index: int, text: str) -> Outcome:
+        """Rewrite one of the user's own messages, wherever it sits."""
+        if self.chat is None:
+            return Outcome(Step.IDLE)
+        if self.busy(self.chat.id):
+            return Outcome(Step.BLOCKED, en.CHAT_BUSY)
+        if not 0 <= index < len(self.chat.messages):
+            return Outcome(Step.ERROR, "That message is no longer there.")
+        message = self.chat.messages[index]
+        if message.role is not Role.USER:
+            return Outcome(Step.BLOCKED, "Only your own messages can be edited here.")
+        if not text.strip():
+            return Outcome(Step.BLOCKED, "Message text can't be empty.")
+        message.text = text
         self._save()
         return Outcome(Step.UPDATED)
 

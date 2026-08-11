@@ -70,6 +70,14 @@ _HEAD_HTML = """
   .tg-nav-item:hover { background: rgba(52, 97, 140, 0.14); }
   .tg-nav-item.tg-active { background: #34618C; color: #fff; }
 
+  /* Quoted dialogue in chat messages */
+  .tg-quote { font-weight: 700; }
+
+  /* Per-message actions: out of the way until the message is hovered */
+  .tg-msg-actions { opacity: 0; transition: opacity 0.15s ease; }
+  .tg-msg:hover .tg-msg-actions,
+  .tg-msg-actions:focus-within { opacity: 1; }
+
   /* Compact chat-history list: square, tight rows that never overflow sideways */
   .tg-chat-item.q-item {
     border-radius: 0;
@@ -79,16 +87,16 @@ _HEAD_HTML = """
   }
   .tg-chat-item:hover { background: rgba(52, 97, 140, 0.14); }
   .tg-chat-item.tg-active { background: #34618C; color: #fff; }
-  .tg-chat-delete-section.q-item__section--side {
+  .tg-chat-menu-section.q-item__section--side {
     padding-left: 4px;
     padding-right: 0;
   }
-  .tg-chat-delete.q-btn {
+  .tg-chat-menu.q-btn {
     min-height: 24px;
     min-width: 24px;
     padding: 0;
   }
-  .tg-chat-delete .q-icon { font-size: 16px; }
+  .tg-chat-menu .q-icon { font-size: 16px; }
   .tg-list-shell {
     border-radius: 8px;
     overflow: hidden;
@@ -191,6 +199,12 @@ _HEAD_HTML = """
      show Params(1/2) + SetsList(1/4), with the remaining 1/4 empty. */
   .tg-strip { transition: transform 200ms ease; }
   .tg-strip.tg-edit { transform: translateX(-40%); }
+  /* One scrollbar for the whole strip; the off-strip 25% stays clipped. */
+  .tg-strip-scroll {
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-bottom: 0.75rem;
+  }
 
   /* Grouped model-page controls. */
   .tg-pset-box {

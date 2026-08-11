@@ -221,7 +221,7 @@ def _model_card(bridge):
         lines = engine.server.output_lines()
         return "\n".join(lines) if lines else "No llama.cpp output yet."
 
-    with ui.card().classes("w-full h-full p-5 gap-4 overflow-auto"):
+    with ui.card().classes("w-full flex-1 p-5 gap-4"):
         with ui.row().classes("w-full items-center justify-between"):
             ui.label("Model").classes("text-lg font-semibold")
             ui.badge("llama.cpp").props("color=secondary").classes("font-mono")
@@ -933,7 +933,7 @@ def render():
 
     @ui.refreshable
     def details_panel():
-        with ui.card().classes("w-full h-full p-5 gap-4 overflow-auto"):
+        with ui.card().classes("w-full flex-1 p-5 gap-4"):
             if state["mode"] == "view":
                 runtime = active_runtime()
                 params = param_values(state["active"])
@@ -1159,7 +1159,7 @@ def render():
 
     @ui.refreshable
     def sets_panel():
-        with ui.card().classes("w-full h-full p-4 gap-2 overflow-hidden flex flex-col"):
+        with ui.card().classes("w-full flex-1 p-4 gap-2 flex flex-col"):
             runtime_mode = state["mode"] == "runtime_edit"
             with ui.row().classes("w-full items-center justify-between"):
                 ui.label("Templates" if runtime_mode else "Parameter sets") \
@@ -1175,18 +1175,19 @@ def render():
                     .props("color=positive unelevated").classes("flex-1")
                 ui.button(icon="delete", on_click=ask_delete) \
                     .props("color=negative unelevated").tooltip("Delete selected")
-            with ui.scroll_area().classes("flex-1 w-full min-h-0 tg-list-shell"):
+            with ui.element("div").classes("w-full tg-list-shell"):
                 sets_list()
 
-    with ui.element("div").classes("w-full overflow-hidden") \
+    with ui.element("div").classes("w-full tg-strip-scroll") \
             .style("height: calc(100vh - 7rem)"):
-        strip = ui.row().classes("tg-strip h-full no-wrap gap-0").style("width: 125%")
+        strip = ui.row().classes("tg-strip no-wrap gap-0 items-stretch") \
+            .style("width: 125%; min-height: 100%")
         with strip:
-            with ui.element("div").classes("w-2/5 h-full px-3"):
+            with ui.element("div").classes("w-2/5 px-3 flex flex-col"):
                 _model_card(bridge)
-            with ui.element("div").classes("w-2/5 h-full px-3"):
+            with ui.element("div").classes("w-2/5 px-3 flex flex-col"):
                 details_panel()
-            with ui.element("div").classes("w-1/5 h-full px-3"):
+            with ui.element("div").classes("w-1/5 px-3 flex flex-col"):
                 sets_panel()
 
     sync_active_params()

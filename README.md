@@ -32,6 +32,7 @@ make start-dev       # python -m thaumaturgy.main (hot reload for development)
 
 - `THAUM_PORT` — port to serve on (default `8080`).
 - `THAUM_DATA` — data directory (default `./data`).
+- `THAUM_LOG_DIR` — diagnostic log directory; overrides the one set on the Settings page, which is where it is normally configured (off by default).
 
 The `training` extra (`uv sync --extra training`) adds torch/transformers/etc.,
 used for the safetensors→GGUF conversion path in the model downloader and, later,

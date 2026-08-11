@@ -98,6 +98,8 @@ class Chat:
     scenario: str | None = None
     model: str | None = None
     title: str = "New chat"
+    # Set by a rename; stops the title being derived from the first message.
+    title_custom: bool = False
     created: float = 0.0
     updated: float = 0.0
     messages: list[Message] = field(default_factory=list)
@@ -123,17 +125,21 @@ class Chat:
         return cls(
             id=d["id"], scenario=d.get("scenario"), model=d.get("model"),
             title=d.get("title") or "New chat",
+            title_custom=bool(d.get("title_custom")),
             created=float(d.get("created", 0.0)),
             updated=float(d.get("updated", 0.0)),
             messages=[Message.from_dict(m) for m in (d.get("messages") or [])],
         )
 
     def to_dict(self) -> dict:
-        return {
+        out = {
             "id": self.id, "scenario": self.scenario, "model": self.model,
             "title": self.title, "created": self.created, "updated": self.updated,
             "messages": [m.to_dict() for m in self.messages],
         }
+        if self.title_custom:
+            out["title_custom"] = True
+        return out
 
 
 @dataclass(frozen=True)
