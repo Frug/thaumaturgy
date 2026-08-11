@@ -61,8 +61,13 @@ page (default 4000 tokens, capped at 15% of the context window so the recap
 cannot crowd out the recent messages it made room for). It is a ceiling, not a
 target: models stop when they judge the summary complete, so the recap is
 usually shorter. The recap instructions live in `compaction.yaml` in the data
-dir and can be edited. Whether the chat draws a divider where the recap takes
-over is a Settings-page toggle.
+dir and can be edited; an unedited file picks up new defaults automatically.
+
+The chat's Context panel breaks down what the model is being sent, jumps to the
+point in the transcript where the recap takes over, shows the recap itself, and
+compacts on demand — **Compact now** on an uncompacted chat, **Redo recap** to
+write the current one again after changing the budget or the instructions.
+Whether the chat draws a divider at that point is a Settings-page toggle.
 
 ## Credits
 

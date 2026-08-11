@@ -17,6 +17,12 @@ COMPACT_ASK = ("This chat has outgrown the context window ({used:,} of "
                "carry on?")
 COMPACT_ASK_DETAIL = ("Your transcript is untouched — this only changes what "
                       "the model is sent. The chat is unavailable while it runs.")
+COMPACT_FORCE_ASK = ("Compact this chat now, before it needs it? The oldest "
+                     "messages are summarized and the recap is sent in their "
+                     "place.")
+COMPACT_REDO_ASK = ("Write the recap again over the same {covers} messages, "
+                    "replacing the current one? Use this after changing the "
+                    "recap budget or the instructions in compaction.yaml.")
 COMPACT_RUNNING = "Summarizing the earlier messages…"
 COMPACT_DONE = "Folded {folded} messages into a recap."
 COMPACT_STILL_TOO_LONG = ("Still too long after compacting. Shorten the message "

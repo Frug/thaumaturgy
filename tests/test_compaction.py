@@ -32,7 +32,7 @@ def test_a_recap_replaces_the_messages_it_covers():
     c = conversation()
     recap(c, 7)
     msgs = prompt.build(c, SCENARIO)
-    assert "Story so far:" in msgs[0]["content"]
+    assert "Context summary:" in msgs[0]["content"]
     assert "Much happened." in msgs[0]["content"]
     # Only the turns after the boundary are sent verbatim.
     assert len(msgs) == len(c.messages) - 7 + 1
@@ -45,7 +45,7 @@ def test_the_full_transcript_is_still_available_uncompacted():
     recap(c, 7)
     full = prompt.build(c, SCENARIO, compacted=False)
     assert "user 0" in str(full)
-    assert "Story so far" not in str(full)
+    assert "Context summary" not in str(full)
 
 
 def test_editing_a_covered_message_retires_the_recap():
@@ -202,3 +202,45 @@ def test_a_bigger_recap_budget_keeps_less_verbatim_history(monkeypatch):
     large = compaction.plan(c, SCENARIO)
     assert large.budget > small.budget
     assert large.covers > small.covers   # the recap's room comes out of the tail
+
+
+def test_the_summarizer_is_told_the_span_and_a_length_floor(monkeypatch):
+    seen = {}
+
+    def capture(messages, budget):
+        seen["ask"] = messages[-1]["content"]
+        return "recap"
+
+    monkeypatch.setattr(compaction, "_generate", capture)
+    target = compaction.Plan(start=0, covers=9, used=4000, total=8192, budget=1000)
+    compaction.run(conversation(turns=20), SCENARIO, target)
+    assert "9 turns" in seen["ask"]            # how much it is condensing
+    assert "450-750 words" in seen["ask"]      # a floor, not just a ceiling
+    assert "{" not in seen["ask"]              # every placeholder was filled
+
+
+def test_an_untouched_prompt_file_picks_up_a_new_default(tmp_path, monkeypatch):
+    old = store._SUPERSEDED_COMPACTION["instruction"][0]
+    store.save_compaction_prompt({**store._default_compaction_doc(), "instruction": old})
+    assert store.load_compaction_prompt()["instruction"] != old
+    # An edited file is the user's own and survives untouched.
+    store.save_compaction_prompt({**store._default_compaction_doc(),
+                                  "instruction": "My own wording. {transcript}"})
+    assert store.load_compaction_prompt()["instruction"] == "My own wording. {transcript}"
+    store.save_compaction_prompt(store._default_compaction_doc())
+
+
+def test_an_edited_template_still_gets_the_transcript_but_not_stray_numbers():
+    filled = compaction._fill("Just summarize it.",
+                              {"turns": "9", "max_words": "750",
+                               "recap": "", "transcript": "T: hello"})
+    assert "T: hello" in filled     # the material is appended when unreferenced
+    assert "9" not in filled and "750" not in filled
+
+
+def test_compaction_can_be_forced_before_the_window_is_full(monkeypatch):
+    monkeypatch.setattr(compaction, "window", lambda: 100_000)
+    c = conversation(turns=40, size=400)
+    assert compaction.plan(c, SCENARIO) is None
+    forced = compaction.plan(c, SCENARIO, force=True)
+    assert forced is not None and forced.possible

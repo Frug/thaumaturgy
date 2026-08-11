@@ -32,6 +32,7 @@ MIN_RECAP_TOKENS = 256
 MIN_KEEP = 4                # messages left verbatim, however big they are
 MIN_FOLD = 4                # fewer than this isn't worth a round trip
 WORDS_PER_TOKEN = 0.75      # recap budget is stated to the model in words
+MIN_WORDS_SHARE = 0.6       # of the budget, asked for as a floor
 REQUEST_OVERHEAD = 256      # template scaffolding around the summarizer's own prompt
 
 
@@ -63,11 +64,16 @@ class Report:
     exact: bool
     full: int           # what the same chat would cost with no recap
     covered: int        # messages the recap stands in for
+    messages: int       # messages in the chat, folded or not
     recap_tokens: int
 
     @property
     def compacted(self) -> bool:
         return self.covered > 0
+
+    @property
+    def verbatim(self) -> int:
+        return self.messages - self.covered
 
 
 def window() -> int | None:
@@ -115,11 +121,12 @@ def report(chat: Chat | None, scenario: Scenario | None, draft: str = "",
     used, exact = _count(chat, scenario, draft, supports_system_role, compacted=True)
     if summary is None:
         return Report(used=used, total=window(), exact=exact, full=used,
-                      covered=0, recap_tokens=0)
+                      covered=0, messages=len(chat.messages), recap_tokens=0)
     # Only a compacted chat pays for the second count.
     full, _ = _count(chat, scenario, draft, supports_system_role, compacted=False)
     return Report(used=used, total=window(), exact=exact, full=full,
-                  covered=summary.covers, recap_tokens=summary.tokens)
+                  covered=summary.covers, messages=len(chat.messages),
+                  recap_tokens=summary.tokens)
 
 
 def _split_point(messages: list[Message], keep_tokens: int, start: int) -> int:
@@ -140,11 +147,13 @@ def _split_point(messages: list[Message], keep_tokens: int, start: int) -> int:
 
 
 def plan(chat: Chat | None, scenario: Scenario | None, *, draft: str = "",
-         supports_system_role: bool = True) -> Plan | None:
+         supports_system_role: bool = True, force: bool = False) -> Plan | None:
     """What compaction is needed before the next reply, or None if it isn't.
 
-    A returned Plan may still be impossible (`possible` False) when the recent
-    turns alone fill the window; the caller has to say so rather than compact.
+    With `force`, plan one regardless of how full the window is: the user asking
+    for it outright is reason enough. A returned Plan may still be impossible
+    (`possible` False) when the recent turns alone fill the window; the caller
+    has to say so rather than compact.
     """
     if chat is None or not chat.messages:
         return None
@@ -153,12 +162,16 @@ def plan(chat: Chat | None, scenario: Scenario | None, *, draft: str = "",
         return None
     room = reserve()
     used, _ = _count(chat, scenario, draft, supports_system_role, compacted=True)
-    if used + room <= total * TRIGGER_RATIO:
+    if not force and used + room <= total * TRIGGER_RATIO:
         return None
 
     budget = recap_budget(total)
     overhead = engine.estimate_tokens(scenario.context) if scenario else 0
     keep = int(total * TARGET_RATIO) - room - budget - overhead
+    if force:
+        # The target is a share of the window, so a chat that still fits would
+        # plan to keep all of itself. Fold the older half of what is there.
+        keep = min(keep, used // 2)
     summary = chat.active_summary()
     start = summary.covers if summary is not None else 0
     covers = _split_point(chat.messages, max(keep, 0), start)
@@ -193,12 +206,17 @@ def _transcript(messages: list[Message], limit: int) -> str:
     return "\n\n".join(lines)
 
 
-def _fill(template: str, values: dict) -> str:
+def _fill(template: str, values: dict, content: tuple = ("recap", "transcript")) -> str:
+    """Substitute placeholders, appending only the ones that carry the material.
+
+    An edited template that drops {transcript} would otherwise leave the model
+    nothing to work from; one that drops {turns} just doesn't want the number.
+    """
     for key, value in values.items():
         token = "{" + key + "}"
         if token in template:
             template = template.replace(token, value)
-        elif value.strip():
+        elif key in content and value.strip():
             template = f"{template}\n\n{value}"
     return template
 
@@ -235,8 +253,13 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
     if not transcript.strip():
         raise RuntimeError("Those messages have no text to summarize.")
 
+    max_words = int(target.budget * WORDS_PER_TOKEN)
     ask = _fill(doc["instruction"], {
-        "max_words": str(int(target.budget * WORDS_PER_TOKEN)),
+        "max_words": str(max_words),
+        # A floor as well as a ceiling: asked only for a maximum, models treat
+        # the task as done long before the budget is anywhere near spent.
+        "min_words": str(max(120, int(max_words * MIN_WORDS_SHARE))),
+        "turns": str(target.folded),
         "scenario": scenario.name if scenario else "",
         "recap": carried,
         "transcript": transcript,

@@ -334,33 +334,83 @@ def _compaction_path() -> Path:
 def _default_compaction_doc() -> dict:
     return {
         "system": (
-            "You are an archivist. You condense an ongoing story so it can "
-            "continue after its earliest scenes have scrolled out of view. You "
-            "never continue the story, never speak as a character, and never "
-            "address the reader."
+            "You are an archivist. You condense an ongoing conversation so it "
+            "can continue after its earliest turns have scrolled out of view. "
+            "What you leave out is lost: the original turns are never consulted "
+            "again. You never continue the conversation, never speak as any "
+            "participant, and never address the reader."
         ),
         "instruction": (
-            "Write a recap of the story so far, in at most {max_words} words.\n\n"
-            "Keep: who the characters are and how they stand with each other, "
-            "what happened and in what order, decisions taken and promises "
-            "given, details of the setting that later scenes depend on, and "
-            "every thread left unresolved.\n"
-            "Drop: turn-by-turn phrasing, pleasantries, and description that no "
-            "longer bears on anything.\n\n"
-            "Write continuous past-tense prose, third person, with no headings "
-            "and no bullet points. Use names exactly as they appear.\n\n"
+            "Condense the {turns} turns below into a record the conversation "
+            "can be continued from. They will not be available again, so "
+            "anything you omit is gone.\n\n"
+            "Write {min_words}-{max_words} words, under each of these headings "
+            "that applies:\n\n"
+            "**Participants** - everyone named, who they are, and how they "
+            "stand with each other now.\n"
+            "**What happened** - events and exchanges in the order they "
+            "occurred, from the start of this span through to its end. Cover "
+            "the whole span evenly; do not hurry through the early parts to "
+            "reach the recent ones.\n"
+            "**Where things stand** - the situation as of the last turn: "
+            "setting, state, and anything left in progress.\n"
+            "**Open threads** - questions raised and unanswered, commitments "
+            "made and unmet, plans stated and not yet carried out, and what "
+            "each participant currently intends.\n"
+            "**Details to preserve** - specifics a later turn would contradict "
+            "if they were forgotten: names, numbers, descriptions, established "
+            "facts, decisions already settled, and any distinctive phrasing "
+            "worth keeping.\n\n"
+            "Prefer specifics to summary. A name, a number, or a quoted phrase "
+            "is worth more than a sentence describing it in general terms. Err "
+            "long: length costs little here, and detail lost cannot be "
+            "recovered.\n\n"
             "{recap}\n\n"
             "Transcript:\n{transcript}"
         ),
         "carry": (
-            "Recap of earlier events, already condensed once. Carry what still "
+            "Recap of earlier events, already condensed once. It is now the "
+            "only record of them, so carry everything from it that still "
             "matters into the new recap:"
         ),
     }
 
 
+# Earlier defaults, replaced on load when the file still holds them verbatim.
+# An edited file is the user's own and is never touched.
+_SUPERSEDED_COMPACTION = {
+    "system": [
+        "You are an archivist. You condense an ongoing story so it can "
+        "continue after its earliest scenes have scrolled out of view. You "
+        "never continue the story, never speak as a character, and never "
+        "address the reader."
+    ],
+    "instruction": [
+        "Write a recap of the story so far, in at most {max_words} words.\n\n"
+        "Keep: who the characters are and how they stand with each other, "
+        "what happened and in what order, decisions taken and promises "
+        "given, details of the setting that later scenes depend on, and "
+        "every thread left unresolved.\n"
+        "Drop: turn-by-turn phrasing, pleasantries, and description that no "
+        "longer bears on anything.\n\n"
+        "Write continuous past-tense prose, third person, with no headings "
+        "and no bullet points. Use names exactly as they appear.\n\n"
+        "{recap}\n\n"
+        "Transcript:\n{transcript}"
+    ],
+    "carry": [
+        "Recap of earlier events, already condensed once. Carry what still "
+        "matters into the new recap:"
+    ],
+}
+
+
 def load_compaction_prompt() -> dict:
-    """The recap instructions, seeded on disk the first time they are needed."""
+    """The recap instructions, seeded on disk the first time they are needed.
+
+    A field still holding an older default is replaced by the current one and
+    written back, so an untouched file keeps up. Anything edited is kept as is.
+    """
     doc = _default_compaction_doc()
     try:
         saved = yaml.safe_load(_compaction_path().read_text(encoding="utf-8"))
@@ -369,10 +419,17 @@ def load_compaction_prompt() -> dict:
     if not isinstance(saved, dict):
         save_compaction_prompt(doc)
         return doc
+    upgraded = False
     for key in doc:
         value = saved.get(key)
-        if isinstance(value, str) and value.strip():
+        if not (isinstance(value, str) and value.strip()):
+            upgraded = True          # missing field: the default fills it in
+        elif value.strip() in [old.strip() for old in _SUPERSEDED_COMPACTION[key]]:
+            upgraded = True
+        else:
             doc[key] = value
+    if upgraded:
+        save_compaction_prompt(doc)
     return doc
 
 
