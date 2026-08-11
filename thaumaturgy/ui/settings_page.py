@@ -6,13 +6,7 @@ from pathlib import Path
 from nicegui import ui
 
 from thaumaturgy import paths, store
-
-LOG_HELP = (
-    "Off by default. When set, llama-server's output is mirrored to "
-    "llama-server.log and each editing attempt is appended to editing.jsonl. "
-    "The in-app llama.cpp panel only keeps the last few hundred lines, so a "
-    "log directory is what lets you look at a load or a timing after the fact."
-)
+from thaumaturgy.lang import en
 
 
 def render() -> None:
@@ -23,6 +17,21 @@ def render() -> None:
         ui.label("Settings").classes("text-2xl font-semibold")
 
         with ui.column().classes("tg-pset-box w-full gap-2"):
+            ui.label("Chat compaction").classes(
+                "text-xs text-muted uppercase tracking-wide")
+
+            def set_divider(value: bool) -> None:
+                store.save_compaction_divider(value)
+                ui.notify("Compaction divider shown" if value
+                          else "Compaction divider hidden", type="positive")
+
+            ui.switch("Show the compaction divider in chats",
+                      value=store.compaction_divider(),
+                      on_change=lambda e: set_divider(e.value)) \
+                .classes("text-sm")
+            ui.label(en.COMPACTION_HELP).classes("text-xs text-muted leading-snug")
+
+        with ui.column().classes("tg-pset-box w-full gap-2"):
             ui.label("Diagnostic logs").classes(
                 "text-xs text-muted uppercase tracking-wide")
             log_input = ui.input(
@@ -30,7 +39,7 @@ def render() -> None:
                 value=env_override or store.log_dir_setting(),
                 placeholder=str(Path.home() / "thaumaturgy-logs"),
             ).classes("w-full tg-field").props("filled clearable")
-            ui.label(LOG_HELP).classes("text-xs text-muted leading-snug")
+            ui.label(en.LOG_HELP).classes("text-xs text-muted leading-snug")
 
             status = ui.label().classes("text-sm")
 

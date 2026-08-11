@@ -311,6 +311,77 @@ def save_log_dir(path: str | None) -> None:
     paths.reset_log_dir()
 
 
+def compaction_divider() -> bool:
+    """Whether the chat marks where its recap takes over. On unless turned off."""
+    value = load_app_config().get("compaction_divider")
+    return True if value is None else bool(value)
+
+
+def save_compaction_divider(show: bool) -> None:
+    config = load_app_config()
+    config["compaction_divider"] = bool(show)
+    save_app_config(config)
+
+
+# ── Compaction prompt (<data>/compaction.yaml) ──────────────────────────────
+# How a chat's older turns get condensed once it outgrows the context window.
+# Seeded on first read so it can be edited like any other data file.
+
+def _compaction_path() -> Path:
+    return data_dir() / "compaction.yaml"
+
+
+def _default_compaction_doc() -> dict:
+    return {
+        "system": (
+            "You are an archivist. You condense an ongoing story so it can "
+            "continue after its earliest scenes have scrolled out of view. You "
+            "never continue the story, never speak as a character, and never "
+            "address the reader."
+        ),
+        "instruction": (
+            "Write a recap of the story so far, in at most {max_words} words.\n\n"
+            "Keep: who the characters are and how they stand with each other, "
+            "what happened and in what order, decisions taken and promises "
+            "given, details of the setting that later scenes depend on, and "
+            "every thread left unresolved.\n"
+            "Drop: turn-by-turn phrasing, pleasantries, and description that no "
+            "longer bears on anything.\n\n"
+            "Write continuous past-tense prose, third person, with no headings "
+            "and no bullet points. Use names exactly as they appear.\n\n"
+            "{recap}\n\n"
+            "Transcript:\n{transcript}"
+        ),
+        "carry": (
+            "Recap of earlier events, already condensed once. Carry what still "
+            "matters into the new recap:"
+        ),
+    }
+
+
+def load_compaction_prompt() -> dict:
+    """The recap instructions, seeded on disk the first time they are needed."""
+    doc = _default_compaction_doc()
+    try:
+        saved = yaml.safe_load(_compaction_path().read_text(encoding="utf-8"))
+    except (yaml.YAMLError, OSError):
+        saved = None
+    if not isinstance(saved, dict):
+        save_compaction_prompt(doc)
+        return doc
+    for key in doc:
+        value = saved.get(key)
+        if isinstance(value, str) and value.strip():
+            doc[key] = value
+    return doc
+
+
+def save_compaction_prompt(doc: dict) -> None:
+    _write_atomic(_compaction_path(),
+                  yaml.safe_dump(doc, sort_keys=False, allow_unicode=True,
+                                 default_flow_style=False))
+
+
 # ── Scenarios (one YAML file each under <data>/scenarios/) ──────────────────
 # A scenario dict carries a "_file" key (its on-disk slug) so renames can move
 # the file.

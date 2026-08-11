@@ -10,7 +10,7 @@ import time
 
 from nicegui import app, run, ui
 
-from thaumaturgy import appstate, engine
+from thaumaturgy import appstate, engine, store
 from thaumaturgy.chat import Message, Step, chat
 from thaumaturgy.lang import en
 from thaumaturgy.ui.outcomes import notify
@@ -105,6 +105,30 @@ def _context_label(used: int | None, total: int | None, exact: bool = True) -> s
         pct = min(999, round((used / total) * 100))
         return f"Context {prefix}{used:,} / {total:,} ({pct}%)"
     return f"Context {prefix}{used:,}"
+
+
+def _context_detail(report) -> str:
+    """The breakdown behind the badge, once the number stops being the whole story."""
+    lines = [f"model sees   {report.used:,}"]
+    if report.compacted:
+        lines += [f"full chat    {report.full:,}",
+                  f"recap        {report.recap_tokens:,}",
+                  f"folded in    {report.covered} messages"]
+    else:
+        lines.append("not compacted")
+    if not report.exact:
+        lines.append("(estimated: no tokenizer)")
+    return "\n".join(lines)
+
+
+def _compaction_divider(summary) -> None:
+    """Mark where the recap takes over, with the recap itself a click away."""
+    with ui.column().classes("w-full items-stretch gap-1 py-3"):
+        ui.separator()
+        with ui.expansion(en.COMPACT_DIVIDER.format(covers=summary.covers),
+                          icon="compress").classes("w-full text-xs text-muted"):
+            ui.markdown(_message_md(summary.text)).classes(
+                "text-xs leading-relaxed break-words text-muted")
 
 
 def _avatar(m: Message):
@@ -256,7 +280,13 @@ def render():
                 streaming = chat.busy()
                 regenerate_index = (None if streaming
                                     else chat.chat.latest_assistant_index())
+                summary = chat.chat.active_summary()
+                divider_at = (summary.covers
+                              if summary is not None and store.compaction_divider()
+                              else None)
                 for i, m in enumerate(chat.chat.messages):
+                    if i == divider_at:
+                        _compaction_divider(summary)
                     on_edit = (None if streaming or not m.is_user
                                else lambda idx=i: edit_user_message(idx))
                     view = _message(m, on_scenario_click=open_scenario,
@@ -356,6 +386,7 @@ def render():
     pending_delete = {"chat_id": None}
     pending_rename = {"chat_id": None}
     pending_edit = {"chat_id": None, "index": None}
+    pending_compaction = {"draft": ""}
 
     with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:420px;max-width:92vw"):
@@ -375,6 +406,17 @@ def render():
         with ui.row().classes("w-full justify-end gap-2"):
             ui.button("Cancel", on_click=rename_dialog.close).props("flat")
             ui.button("Save", icon="save", on_click=lambda: save_renamed_chat()) \
+                .props("color=primary unelevated")
+
+    with ui.dialog() as compact_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:460px;max-width:92vw"):
+        ui.label("Compact this chat").classes("text-lg font-semibold")
+        compact_label = ui.label().classes("text-sm leading-relaxed")
+        ui.label(en.COMPACT_ASK_DETAIL).classes("text-xs text-muted leading-snug")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=compact_dialog.close).props("flat")
+            ui.button("Summarize", icon="compress",
+                      on_click=lambda: asyncio.create_task(run_compaction())) \
                 .props("color=primary unelevated")
 
     with ui.dialog() as edit_dialog, ui.card().classes("p-5 gap-3") \
@@ -464,19 +506,51 @@ def render():
     def on_scenario_change(name: str):
         apply(chat.select_scenario(name))
 
-    def send():
-        text = _normalize_user_markdown(input_box.value or "")
-        if not text:
-            return
+    def submit(text: str, *, retried: bool = False):
         outcome = chat.send(text)
+        if outcome.step is Step.COMPACT_REQUIRED:
+            if retried:
+                # A recap this big is a prompt problem, not something another
+                # round of the same would fix.
+                ui.notify(en.COMPACT_STILL_TOO_LONG, type="warning")
+                return
+            ask_compaction(outcome.message, text)
+            return
         if outcome.step is Step.BLOCKED:
             notify(outcome)  # the draft stays in the box, so nothing is lost
             return
         input_box.value = ""
         apply(outcome)
 
+    def send():
+        text = _normalize_user_markdown(input_box.value or "")
+        if text:
+            submit(text)
+
     def regenerate_last():
-        apply(chat.regenerate())
+        outcome = chat.regenerate()
+        if outcome.step is Step.COMPACT_REQUIRED:
+            ask_compaction(outcome.message, "")
+            return
+        apply(outcome)
+
+    def ask_compaction(message: str, draft: str):
+        pending_compaction["draft"] = draft
+        compact_label.text = message
+        compact_dialog.open()
+
+    async def run_compaction():
+        compact_dialog.close()
+        draft = pending_compaction["draft"]
+        pending_compaction["draft"] = ""
+        ui.notify(en.COMPACT_RUNNING)
+        outcome = await run.io_bound(chat.compact, draft)
+        notify(outcome)
+        show_current()
+        # The draft never left the composer, so a successful compaction can just
+        # carry on with the message that triggered it.
+        if outcome.step is Step.UPDATED and draft:
+            submit(draft, retried=True)
 
     @ui.refreshable
     def chat_list():
@@ -535,6 +609,10 @@ def render():
                 .props("outline color=secondary") \
                 .classes("min-h-8 w-full justify-center px-2 py-1 font-mono "
                          "text-[11px] whitespace-normal text-center leading-tight")
+            with ui.expansion("Details", icon="expand_more") \
+                    .props("dense").classes("w-full text-xs text-muted"):
+                context_detail = ui.label().classes(
+                    "font-mono text-[11px] leading-tight whitespace-pre-wrap text-muted")
 
     context_state = {"signature": None, "busy": False}
     placeholder_state = {"text": None}
@@ -556,6 +634,7 @@ def render():
         total = chat.context_total()
         signature = (chat.scenario_name, chat.chat.id if chat.chat else None,
                      len(messages), last, input_box.value or "", total,
+                     len(chat.chat.summaries) if chat.chat else 0,
                      engine.server.running, engine.server.model,
                      engine.server.supports_system_role())
         if signature == context_state["signature"] or context_state["busy"]:
@@ -564,9 +643,9 @@ def render():
         context_state["busy"] = True
         try:
             draft = _normalize_user_markdown(input_box.value or "")
-            used, exact = await run.io_bound(engine.server.count_chat_tokens,
-                                             chat.context_messages(draft))
-            context_counter.text = _context_label(used, total, exact)
+            report = await run.io_bound(chat.context_report, draft)
+            context_counter.text = _context_label(report.used, total, report.exact)
+            context_detail.text = _context_detail(report)
         finally:
             context_state["busy"] = False
 

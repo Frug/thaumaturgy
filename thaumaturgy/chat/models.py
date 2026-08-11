@@ -4,6 +4,7 @@ Imports nothing from engine or store: a Chat can be built and inspected without
 a loaded model or a disk.
 """
 
+import hashlib
 from dataclasses import dataclass, field
 from enum import StrEnum
 
@@ -92,6 +93,46 @@ class Message:
         return out
 
 
+def fingerprint(messages: list[Message]) -> str:
+    """Identify a run of messages by content, so an edit to one is detectable."""
+    h = hashlib.sha1()
+    for m in messages:
+        h.update(f"{m.role}\x1f{m.text}\x1e".encode())
+    return h.hexdigest()
+
+
+@dataclass
+class Summary:
+    """A recap standing in for the first `covers` messages of a chat.
+
+    The messages themselves are never touched; this only changes what the model
+    is sent. `fingerprint` is what they said when the recap was written, so a
+    later edit to one of them retires the recap instead of silently misreporting
+    it.
+    """
+
+    text: str = ""
+    covers: int = 0
+    fingerprint: str = ""
+    tokens: int = 0
+    model: str | None = None
+    created: float = 0.0
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Summary":
+        return cls(
+            text=d.get("text") or "", covers=int(d.get("covers", 0)),
+            fingerprint=d.get("fingerprint") or "",
+            tokens=int(d.get("tokens", 0)), model=d.get("model"),
+            created=float(d.get("created", 0.0)),
+        )
+
+    def to_dict(self) -> dict:
+        return {"text": self.text, "covers": self.covers,
+                "fingerprint": self.fingerprint, "tokens": self.tokens,
+                "model": self.model, "created": self.created}
+
+
 @dataclass
 class Chat:
     id: str
@@ -103,10 +144,24 @@ class Chat:
     created: float = 0.0
     updated: float = 0.0
     messages: list[Message] = field(default_factory=list)
+    summaries: list[Summary] = field(default_factory=list)
 
     def append(self, message: Message) -> Message:
         self.messages.append(message)
         return message
+
+    def active_summary(self) -> Summary | None:
+        """The widest recap that still matches the messages it stands for.
+
+        Newest first: re-compaction appends, so the last record covers the most.
+        One invalidated by an edit falls back to an older, narrower one rather
+        than to no recap at all.
+        """
+        for s in reversed(self.summaries):
+            if s.covers <= len(self.messages) and s.text.strip() \
+                    and s.fingerprint == fingerprint(self.messages[:s.covers]):
+                return s
+        return None
 
     def latest_assistant_index(self) -> int | None:
         """Index of the final assistant reply, when it can be redone.
@@ -129,6 +184,7 @@ class Chat:
             created=float(d.get("created", 0.0)),
             updated=float(d.get("updated", 0.0)),
             messages=[Message.from_dict(m) for m in (d.get("messages") or [])],
+            summaries=[Summary.from_dict(s) for s in (d.get("summaries") or [])],
         )
 
     def to_dict(self) -> dict:
@@ -139,6 +195,8 @@ class Chat:
         }
         if self.title_custom:
             out["title_custom"] = True
+        if self.summaries:
+            out["summaries"] = [s.to_dict() for s in self.summaries]
         return out
 
 
