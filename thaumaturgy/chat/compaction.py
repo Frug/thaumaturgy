@@ -4,8 +4,11 @@ The transcript on disk is never edited. Compaction only appends a Summary
 record naming how many leading messages it stands for; `prompt.build` swaps
 them for its text when assembling a request, and the user's view stays whole.
 
-Re-compaction is incremental: the input is the previous recap plus the turns
-that have arrived since, so a long chat never re-reads its whole history.
+Re-compaction is incremental: only the turns since the last recap are folded,
+so a long chat never re-reads its whole history. What becomes of the recap
+already there depends on the strategy — several passes keep it as it stands and
+write beside it, while one pass has to condense it again along with the new
+turns. A target starting at message zero rebuilds instead, keeping nothing.
 """
 
 import math
@@ -245,8 +248,9 @@ def _generate(messages: list[dict], budget: int) -> str:
     return reply.interpret(text, reasoning)[0].strip()
 
 
-def _split_into_passes(messages: list[Message], limit: int) -> list[list[Message]]:
-    """Break the fold into spans of at most `limit` tokens each.
+def _split_into_passes(messages: list[Message], limit: int,
+                       cap: int = MAX_PASSES) -> list[list[Message]]:
+    """Break the fold into spans of at most `limit` tokens each, `cap` of them.
 
     Spans are sized by what goes in, not by what should come out: each gets a
     generation of its own, so their number sets how many times the model is
@@ -262,11 +266,36 @@ def _split_into_passes(messages: list[Message], limit: int) -> list[list[Message
         spent += size
     if current:
         passes.append(current)
-    if len(passes) <= MAX_PASSES:
+    if len(passes) <= cap:
         return passes
-    # Too many for the time they would take: regroup into MAX_PASSES even spans.
-    per = math.ceil(len(messages) / MAX_PASSES)
+    # Too many for the time they would take, or for the budget to divide into
+    # useful shares: regroup into `cap` even spans.
+    per = math.ceil(len(messages) / cap)
     return [messages[i:i + per] for i in range(0, len(messages), per)]
+
+
+def _pass_budgets(passes: list[list[Message]], budget: int) -> list[int]:
+    """Divide the recap budget between passes, by how much each has to condense.
+
+    Spans come out uneven — the last one holds whatever was left — so an even
+    split would give a handful of turns the same room as a full span. The total
+    stays within the budget, which is what keeps a recap from crowding out the
+    recent turns.
+    """
+    weights = [max(engine.estimate_tokens("\n".join(m.text or "" for m in span)), 1)
+               for span in passes]
+    total = sum(weights)
+    shares = [max(MIN_PASS_TOKENS, int(budget * w / total)) for w in weights]
+    # A span too small for its floor is raised to it, and the passes with room
+    # to spare give that back in proportion: the recap has to fit the budget
+    # however it is divided, and the weighting has to survive the trim.
+    over = sum(shares) - budget
+    spare = [s - MIN_PASS_TOKENS for s in shares]
+    if over > 0 and sum(spare) > 0:
+        givable = sum(spare)
+        shares = [s - math.ceil(over * room / givable)
+                  for s, room in zip(shares, spare)]
+    return shares
 
 
 def run(chat: Chat, scenario: Scenario | None, target: Plan,
@@ -278,32 +307,62 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
     parts are kept in order. The budget is shared between them.
     """
     doc = store.load_compaction_prompt()
-    previous = chat.active_summary()
-    carried = ""
+    one_pass = store.compaction_strategy() == "single"
+    # A target starting at 0 is a rebuild: everything is written again from the
+    # messages, whatever recap the chat already has.
+    previous = chat.active_summary() if target.start > 0 else None
+    start, budget = target.start, target.budget
+    kept, carried = "", ""
     if previous is not None and previous.text.strip():
-        carried = (doc["carry"] + "\n" + previous.text.strip())
+        # Recaps written before the count was recorded fall back to an estimate.
+        held = previous.tokens or engine.estimate_tokens(previous.text)
+        if one_pass:
+            # The one generation has to hold the whole recap, so the earlier one
+            # goes through the summarizer again along with the new turns.
+            carried = (doc["carry"] + "\n" + previous.text.strip())
+        elif budget - held >= MIN_PASS_TOKENS:
+            # Passes are sized by their own span, so nothing forces the earlier
+            # recap through the summarizer a second time. Keeping it as it
+            # stands is what stops a recap thinning out on every compaction.
+            kept = previous.text.strip()
+            budget -= held
+        else:
+            # No room left to write beside it: rebuild rather than let the
+            # recap grow past the budget it is capped at.
+            start = 0
 
-    folded = chat.messages[target.start:target.covers]
-    # One generation covers the whole fold, or one per span of it.
-    passes = ([folded] if store.compaction_strategy() == "single"
-              else _split_into_passes(folded, PASS_INPUT_TOKENS))
+    folded = chat.messages[start:target.covers]
+    # One generation covers the whole fold, or one per span of it. A small
+    # budget takes fewer spans: below MIN_PASS_TOKENS each, more passes only
+    # buy shares too small to say anything with.
+    passes = ([folded] if one_pass
+              else _split_into_passes(
+                  folded, PASS_INPUT_TOKENS,
+                  cap=max(1, min(MAX_PASSES, budget // MIN_PASS_TOKENS))))
     # Each pass gets its share of the budget, and its own chance to spend it.
-    budget = max(MIN_PASS_TOKENS, target.budget // len(passes))
-    room = target.total - budget - REQUEST_OVERHEAD \
-        - engine.estimate_tokens(doc["system"] + doc["instruction"] + carried)
+    budgets = _pass_budgets(passes, budget)
     system = doc["system"].strip()
 
-    multi = len(passes) > 1
-    parts, first_turn = [], target.start + 1
+    multi = len(passes) > 1 or bool(kept)
+    parts, first_turn = [], start + 1
+    if kept:
+        # An earlier recap written in one pass has no heading of its own.
+        parts.append(kept if kept.lstrip().startswith("## Turns")
+                     else f"## Turns 1-{start}\n\n{kept}")
     for index, span in enumerate(passes):
         if on_progress is not None:
             on_progress(index + 1, len(passes))
+        share = budgets[index]
+        room = target.total - share - REQUEST_OVERHEAD \
+            - engine.estimate_tokens(system + doc["instruction"] + carried)
         transcript = _transcript(span, max(room, 512))
         last_turn = first_turn + len(span) - 1
-        if not transcript.strip():
+        # A span with nothing in it is skipped, unless it is the one generation
+        # holding the earlier recap: dropping that would lose the history.
+        if not transcript.strip() and not carried:
             first_turn = last_turn + 1
             continue
-        max_words = int(budget * WORDS_PER_TOKEN)
+        max_words = int(share * WORDS_PER_TOKEN)
         ask = _fill(doc["instruction"], {
             "max_words": str(max_words),
             # A floor as well as a ceiling: asked only for a maximum, models
@@ -311,9 +370,7 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
             "min_words": str(max(120, int(max_words * MIN_WORDS_SHARE))),
             "turns": str(len(span)),
             "scenario": scenario.name if scenario else "",
-            # Only the first pass carries the older recap; the rest continue
-            # from the pass before them, which is already in the same document.
-            "recap": carried if index == 0 else "",
+            "recap": carried,
             "transcript": transcript,
         })
         if supports_system_role:
@@ -321,7 +378,7 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
                         {"role": "user", "content": ask}]
         else:
             messages = [{"role": "user", "content": f"{system}\n\n{ask}".strip()}]
-        part = _generate(messages, budget).strip()
+        part = _generate(messages, share).strip()
         if part:
             parts.append(f"## Turns {first_turn}-{last_turn}\n\n{part}"
                          if multi else part)

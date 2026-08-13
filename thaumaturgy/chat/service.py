@@ -6,6 +6,7 @@ generating chat and back keeps it; the page re-attaches to whatever is running.
 One instance for the process, like engine.server.
 """
 
+from dataclasses import replace
 from enum import StrEnum, auto
 
 from thaumaturgy import appstate, engine, store
@@ -281,9 +282,9 @@ class ChatService:
         off the event loop. The plan is recomputed here rather than taken from
         whatever the page last saw, which may be several turns old.
 
-        `redo` retires the newest recap first, so the span it covered is written
-        again from the original messages: the way to re-run one after changing
-        the budget or the instructions.
+        `redo` retires the newest recap and rebuilds from message one, carrying
+        nothing over from it: the way to re-run a recap after changing the
+        budget or the instructions, or to replace one that came out badly.
         """
         if self.chat is None:
             return Outcome(Step.IDLE)
@@ -295,6 +296,11 @@ class ChatService:
         chat = self.chat
         retired = chat.summaries.pop() if (redo and chat.summaries) else None
         target = self.plan_compaction(draft, force=force)
+        if retired is not None and target is not None:
+            # Start from message one, over at least the span the retired recap
+            # held: a redo is asked for when that recap is what needs replacing.
+            target = replace(target, start=0,
+                             covers=max(target.covers, retired.covers))
         if target is None or not target.possible:
             if retired is not None:
                 chat.summaries.append(retired)  # nothing replaced it
