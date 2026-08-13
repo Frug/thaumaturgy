@@ -10,6 +10,7 @@ from nicegui import app, run, ui
 
 from thaumaturgy import appstate, engine, hf_download, store
 from thaumaturgy.lang import en
+from thaumaturgy.ui import outcomes
 
 CACHE_TYPES = ["fp16", "q8_0", "q4_0"]
 CHAT_TEMPLATES = {
@@ -393,7 +394,7 @@ def _model_card(bridge):
             try:
                 name = await run.io_bound(
                     fn, *args, lambda m: prog.__setitem__("msg", m))
-                ui.notify(f"Downloaded {name}", type="positive")
+                outcomes.toast(f"Downloaded {name}", "positive")
                 model.set_options(engine.list_models(), value=name)
                 model.enable()
                 appstate.state.current_model = name
@@ -403,7 +404,7 @@ def _model_card(bridge):
                 dl_dialog.close()
             except Exception as exc:  # noqa: BLE001 - surface any failure to the user
                 prog["msg"] = f"Failed: {exc}"
-                ui.notify(f"Download failed: {exc}", type="negative")
+                outcomes.toast(f"Download failed: {exc}", "negative")
             finally:
                 # Render once more by hand: the timer is what was painting
                 # prog, so stopping it first would strand the last message
@@ -565,13 +566,18 @@ def _model_card(bridge):
 
         async def run_load(current_model: str, args: dict):
             load_btn.props("loading")
-            ui.notify(f"Loading {current_model}…")
+            outcomes.toast(f"Loading {current_model}…")
+            said, kind = "", None
             try:
                 await run.io_bound(engine.server.start, current_model, **args)
-                ui.notify(f"Loaded {current_model}")
+                said = f"Loaded {current_model}"
             except Exception as exc:  # noqa: BLE001 - surface any startup failure
-                ui.notify(f"Load failed: {exc}", type="negative")
+                said, kind = f"Load failed: {exc}", "negative"
             finally:
+                # A load takes long enough to navigate away from; the toast is
+                # the one part of this that minds the page being gone.
+                if said:
+                    outcomes.toast(said, kind)
                 load_btn.props(remove="loading")
                 refresh_status()
                 refresh_server_output()
