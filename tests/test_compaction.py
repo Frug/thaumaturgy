@@ -221,13 +221,13 @@ def test_the_summarizer_is_told_the_span_and_a_length_floor(monkeypatch):
 
 def test_an_untouched_prompt_file_picks_up_a_new_default(tmp_path, monkeypatch):
     old = store._SUPERSEDED_COMPACTION["instruction"][0]
-    store.save_compaction_prompt({**store._default_compaction_doc(), "instruction": old})
+    store.save_compaction_prompt({**store.default_compaction_prompt(), "instruction": old})
     assert store.load_compaction_prompt()["instruction"] != old
     # An edited file is the user's own and survives untouched.
-    store.save_compaction_prompt({**store._default_compaction_doc(),
+    store.save_compaction_prompt({**store.default_compaction_prompt(),
                                   "instruction": "My own wording. {transcript}"})
     assert store.load_compaction_prompt()["instruction"] == "My own wording. {transcript}"
-    store.save_compaction_prompt(store._default_compaction_doc())
+    store.save_compaction_prompt(store.default_compaction_prompt())
 
 
 def test_an_edited_template_still_gets_the_transcript_but_not_stray_numbers():

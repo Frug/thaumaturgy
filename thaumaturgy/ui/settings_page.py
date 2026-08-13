@@ -9,6 +9,14 @@ from thaumaturgy import paths, store
 from thaumaturgy.lang import en
 
 
+# The editable parts of compaction.yaml, in the order the summarizer sees them.
+RECAP_FIELDS = (
+    ("system", "Summarizer role (system message)", 120),
+    ("instruction", "Recap instruction", 320),
+    ("carry", "Heading for the previous recap", 90),
+)
+
+
 def render() -> None:
     """Build the Settings page inside the current layout container."""
     env_override = (os.environ.get("THAUM_LOG_DIR") or "").strip()
@@ -45,6 +53,42 @@ def render() -> None:
                 .props("dense").classes("text-sm")
             ui.label(en.COMPACTION_STRATEGY_HELP).classes(
                 "text-xs text-muted leading-snug")
+
+        with ui.column().classes("tg-pset-box w-full gap-2"):
+            ui.label("Recap instructions").classes(
+                "text-xs text-muted uppercase tracking-wide")
+            ui.label(en.RECAP_PROMPT_HELP).classes("text-xs text-muted leading-snug")
+
+            doc = store.load_compaction_prompt()
+            boxes = {
+                key: ui.textarea(label, value=doc[key]).classes("w-full tg-field")
+                        .props(f'filled input-style="height:{height}px"')
+                for key, label, height in RECAP_FIELDS
+            }
+            ui.label(en.RECAP_PROMPT_PLACEHOLDERS).classes(
+                "text-xs text-muted leading-snug")
+
+            def save_prompt() -> None:
+                edited = {key: (box.value or "").strip() for key, box in boxes.items()}
+                # A blank field would be filled from the default on the next
+                # load, so refuse rather than silently discard the edit.
+                if not all(edited.values()):
+                    ui.notify(en.RECAP_PROMPT_EMPTY, type="negative")
+                    return
+                store.save_compaction_prompt({**store.load_compaction_prompt(), **edited})
+                ui.notify("Recap instructions saved", type="positive")
+
+            def load_defaults() -> None:
+                defaults = store.default_compaction_prompt()
+                for key, box in boxes.items():
+                    box.value = defaults[key]
+                ui.notify(en.RECAP_PROMPT_RESTORED, type="info")
+
+            with ui.row().classes("w-full gap-2"):
+                ui.button("Save instructions", icon="save", on_click=save_prompt) \
+                    .props("color=positive unelevated")
+                ui.button("Restore defaults", icon="restart_alt",
+                          on_click=load_defaults).props("flat")
 
         with ui.column().classes("tg-pset-box w-full gap-2"):
             ui.label("Diagnostic logs").classes(

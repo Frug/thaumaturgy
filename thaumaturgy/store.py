@@ -348,7 +348,7 @@ def _compaction_path() -> Path:
     return data_dir() / "compaction.yaml"
 
 
-def _default_compaction_doc() -> dict:
+def default_compaction_prompt() -> dict:
     return {
         "system": (
             "You are an archivist. You condense an ongoing conversation so it "
@@ -363,25 +363,27 @@ def _default_compaction_doc() -> dict:
             "anything you omit is gone.\n\n"
             "Write {min_words}-{max_words} words, under each of these headings "
             "that applies:\n\n"
-            "**Participants** - everyone named, who they are, and how they "
-            "stand with each other now.\n"
-            "**What happened** - events and exchanges in the order they "
-            "occurred, from the start of this span through to its end. Cover "
-            "the whole span evenly; do not hurry through the early parts to "
-            "reach the recent ones.\n"
-            "**Where things stand** - the situation as of the last turn: "
-            "setting, state, and anything left in progress.\n"
-            "**Open threads** - questions raised and unanswered, commitments "
-            "made and unmet, plans stated and not yet carried out, and what "
-            "each participant currently intends.\n"
+            "**Participants** - who is taking part, including any personas or "
+            "characters, and what has been established about them.\n"
+            "**What happened** - what was said, done, and worked out, in the "
+            "order it occurred, from the start of this span through to its "
+            "end. Cover the whole span evenly; do not hurry through the early "
+            "parts to reach the recent ones.\n"
+            "**Where things stand** - the situation as of the last turn, "
+            "including anything left in progress.\n"
+            "**Open threads** - questions asked and unanswered, requests and "
+            "commitments not yet met, and what each participant intends to do "
+            "next.\n"
             "**Details to preserve** - specifics a later turn would contradict "
-            "if they were forgotten: names, numbers, descriptions, established "
-            "facts, decisions already settled, and any distinctive phrasing "
-            "worth keeping.\n\n"
-            "Prefer specifics to summary. A name, a number, or a quoted phrase "
-            "is worth more than a sentence describing it in general terms. Err "
-            "long: length costs little here, and detail lost cannot be "
-            "recovered.\n\n"
+            "if they were forgotten: names, numbers, definitions, stated "
+            "preferences, established facts, decisions already settled, and "
+            "any wording worth keeping verbatim.\n\n"
+            "The conversation may be of any kind - a discussion, work being "
+            "carried out, a story, something else - so record what actually "
+            "took place rather than fitting it to a form. Prefer specifics to "
+            "summary: a name, a number, or a quoted phrase is worth more than "
+            "a sentence describing it in general terms. Err long, since length "
+            "costs little here and detail lost cannot be recovered.\n\n"
             "{recap}\n\n"
             "Transcript:\n{transcript}"
         ),
@@ -403,6 +405,32 @@ _SUPERSEDED_COMPACTION = {
         "address the reader."
     ],
     "instruction": [
+        "Condense the {turns} turns below into a record the conversation "
+        "can be continued from. They will not be available again, so "
+        "anything you omit is gone.\n\n"
+        "Write {min_words}-{max_words} words, under each of these headings "
+        "that applies:\n\n"
+        "**Participants** - everyone named, who they are, and how they "
+        "stand with each other now.\n"
+        "**What happened** - events and exchanges in the order they "
+        "occurred, from the start of this span through to its end. Cover "
+        "the whole span evenly; do not hurry through the early parts to "
+        "reach the recent ones.\n"
+        "**Where things stand** - the situation as of the last turn: "
+        "setting, state, and anything left in progress.\n"
+        "**Open threads** - questions raised and unanswered, commitments "
+        "made and unmet, plans stated and not yet carried out, and what "
+        "each participant currently intends.\n"
+        "**Details to preserve** - specifics a later turn would contradict "
+        "if they were forgotten: names, numbers, descriptions, established "
+        "facts, decisions already settled, and any distinctive phrasing "
+        "worth keeping.\n\n"
+        "Prefer specifics to summary. A name, a number, or a quoted phrase "
+        "is worth more than a sentence describing it in general terms. Err "
+        "long: length costs little here, and detail lost cannot be "
+        "recovered.\n\n"
+        "{recap}\n\n"
+        "Transcript:\n{transcript}",
         "Write a recap of the story so far, in at most {max_words} words.\n\n"
         "Keep: who the characters are and how they stand with each other, "
         "what happened and in what order, decisions taken and promises "
@@ -428,7 +456,7 @@ def load_compaction_prompt() -> dict:
     A field still holding an older default is replaced by the current one and
     written back, so an untouched file keeps up. Anything edited is kept as is.
     """
-    doc = _default_compaction_doc()
+    doc = default_compaction_prompt()
     try:
         saved = yaml.safe_load(_compaction_path().read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError):

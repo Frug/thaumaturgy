@@ -35,8 +35,8 @@ MIN_KEEP = 4                # messages left verbatim, however big they are
 MIN_FOLD = 4                # fewer than this isn't worth a round trip
 WORDS_PER_TOKEN = 0.75      # recap budget is stated to the model in words
 MIN_WORDS_SHARE = 0.6       # of the budget, asked for as a floor
-# Transcript one pass is asked to condense. Small enough that the model's own
-# idea of a complete summary still covers it; larger spans get several passes.
+# Transcript one pass is asked to condense; a longer fold is split across
+# several passes, one generation each.
 PASS_INPUT_TOKENS = 10_000
 MAX_PASSES = 8              # each is a generation, so this bounds the wait
 MIN_PASS_TOKENS = 300       # a share too small to say anything useful with
@@ -246,11 +246,11 @@ def _generate(messages: list[dict], budget: int) -> str:
 
 
 def _split_into_passes(messages: list[Message], limit: int) -> list[list[Message]]:
-    """Break the fold into spans small enough for one summary to cover each.
+    """Break the fold into spans of at most `limit` tokens each.
 
-    Sized by what goes in, not by what should come out: a model asked to
-    condense 40,000 tokens writes about as much as one asked to condense 4,000,
-    so the only way to buy detail is to ask more times.
+    Spans are sized by what goes in, not by what should come out: each gets a
+    generation of its own, so their number sets how many times the model is
+    asked and how the recap budget is divided.
     """
     passes, current, spent = [], [], 0
     for m in messages:
@@ -284,9 +284,7 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
         carried = (doc["carry"] + "\n" + previous.text.strip())
 
     folded = chat.messages[target.start:target.covers]
-    # One generation covers the whole fold, or one per span of it. A model
-    # summarizing 40,000 tokens writes about as much as one summarizing 4,000,
-    # so passes are what buy detail; they cost a generation each.
+    # One generation covers the whole fold, or one per span of it.
     passes = ([folded] if store.compaction_strategy() == "single"
               else _split_into_passes(folded, PASS_INPUT_TOKENS))
     # Each pass gets its share of the budget, and its own chance to spend it.
