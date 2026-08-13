@@ -17,7 +17,14 @@ COMPACT_ASK = ("This chat has outgrown the context window ({used:,} of "
                "carry on?")
 COMPACT_ASK_DETAIL = ("Your transcript is untouched — this only changes what "
                       "the model is sent. The chat is unavailable while it runs.")
+COMPACT_FORCE_ASK = ("Compact this chat now, before it needs it? The oldest "
+                     "messages are summarized and the recap is sent in their "
+                     "place.")
+COMPACT_REDO_ASK = ("Write the recap again over the same {covers} messages, "
+                    "replacing the current one? Use this after changing the "
+                    "recap budget or the recap instructions.")
 COMPACT_RUNNING = "Summarizing the earlier messages…"
+COMPACT_PASS = "Summarizing part {step} of {total}…"
 COMPACT_DONE = "Folded {folded} messages into a recap."
 COMPACT_STILL_TOO_LONG = ("Still too long after compacting. Shorten the message "
                           "or start a new chat.")
@@ -38,9 +45,33 @@ COMPACTION_HELP = (
     "When a chat outgrows the model's context window, its oldest turns are "
     "folded into a recap that the model is sent in their place. Nothing is "
     "removed from the chat itself. The divider marks where the recap takes "
-    "over and can be opened to read it. How the recap is written is set in "
-    "compaction.yaml in the data directory."
+    "over and can be opened to read it."
 )
+COMPACTION_STRATEGY_HELP = (
+    "One pass condenses the whole fold in a single generation, capped at the "
+    "recap budget. Several passes split the fold into spans of about 10,000 "
+    "tokens — at most eight — and give each span its own generation and an "
+    "equal share of the budget, then join the parts in order under a heading "
+    "each. That is one generation per span rather than one in all, so a long "
+    "chat takes correspondingly longer, and the recap arrives as sections "
+    "rather than as one piece."
+)
+RECAP_PROMPT_HELP = (
+    "What the model is asked when it writes a recap. Saved to compaction.yaml "
+    "in the data directory, and used from the next compaction on; existing "
+    "recaps are unaffected until they are rewritten with Redo recap."
+)
+RECAP_PROMPT_PLACEHOLDERS = (
+    "{transcript} is the turns being folded, and {recap} the previous recap "
+    "with the heading field above in front of it; {turns} is how many turns "
+    "this pass covers, {min_words} and {max_words} the length asked of it, and "
+    "{scenario} the scenario's name. A placeholder you leave out is not "
+    "mentioned, except {transcript} and {recap}, whose text is appended at the "
+    "end so the model still has the material."
+)
+RECAP_PROMPT_EMPTY = "Every field is needed. Restore defaults to refill one."
+RECAP_PROMPT_RESTORED = "Defaults loaded — save to keep them."
+
 LOG_HELP = (
     "Off by default. When set, llama-server's output is mirrored to "
     "llama-server.log and each editing attempt is appended to editing.jsonl. "

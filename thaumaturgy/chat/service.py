@@ -33,6 +33,8 @@ class ChatService:
         self.scenario_name: str | None = None
         self._runs: dict[str, ChatRun] = {}
         self._compacting: set[str] = set()
+        # (pass, total) of a running compaction, for the page to show.
+        self.compaction_step: tuple[int, int] | None = None
 
     # ── scenarios ────────────────────────────────────────────────────────────
     def scenarios(self) -> list[Scenario]:
@@ -265,17 +267,23 @@ class ChatService:
         return self.chat.messages[index] if index is not None else None
 
     # ── compaction ───────────────────────────────────────────────────────────
-    def plan_compaction(self, draft: str = "") -> compaction.Plan | None:
+    def plan_compaction(self, draft: str = "", force: bool = False) \
+            -> compaction.Plan | None:
         return compaction.plan(
-            self.chat, self.scenario(), draft=draft,
+            self.chat, self.scenario(), draft=draft, force=force,
             supports_system_role=engine.server.supports_system_role())
 
-    def compact(self, draft: str = "") -> Outcome:
+    def compact(self, draft: str = "", *, force: bool = False,
+                redo: bool = False) -> Outcome:
         """Fold this chat's oldest turns into a recap.
 
         Blocks for as long as the summary takes to generate, so callers run it
         off the event loop. The plan is recomputed here rather than taken from
         whatever the page last saw, which may be several turns old.
+
+        `redo` retires the newest recap first, so the span it covered is written
+        again from the original messages: the way to re-run one after changing
+        the budget or the instructions.
         """
         if self.chat is None:
             return Outcome(Step.IDLE)
@@ -283,25 +291,35 @@ class ChatService:
             return Outcome(Step.BLOCKED, en.NO_MODEL)
         if self.busy(self.chat.id):
             return Outcome(Step.BLOCKED, en.CHAT_BUSY)
-        target = self.plan_compaction(draft)
-        if target is None:
-            return Outcome(Step.UPDATED, en.COMPACT_NOT_NEEDED)
-        if not target.possible:
-            return Outcome(Step.BLOCKED, en.CHAT_TOO_LONG)
 
         chat = self.chat
+        retired = chat.summaries.pop() if (redo and chat.summaries) else None
+        target = self.plan_compaction(draft, force=force)
+        if target is None or not target.possible:
+            if retired is not None:
+                chat.summaries.append(retired)  # nothing replaced it
+            if target is None:
+                return Outcome(Step.UPDATED, en.COMPACT_NOT_NEEDED)
+            return Outcome(Step.BLOCKED, en.CHAT_TOO_LONG)
+
         self._compacting.add(chat.id)
         # Shared with the editing service, which refuses to start while the one
         # llama-server is busy.
         appstate.state.generations[chat.id] = {"kind": "compaction"}
+        def progress(step: int, total: int) -> None:
+            self.compaction_step = (step, total)
+
         try:
             summary = compaction.run(
-                chat, self.scenario(), target,
+                chat, self.scenario(), target, on_progress=progress,
                 supports_system_role=engine.server.supports_system_role())
         except Exception as exc:  # noqa: BLE001 - surfaced to the page as an outcome
+            if retired is not None:
+                chat.summaries.append(retired)  # a failed redo keeps the old one
             return Outcome(Step.ERROR, f"Compaction failed: {exc}")
         finally:
             self._compacting.discard(chat.id)
+            self.compaction_step = None
             appstate.state.generations.pop(chat.id, None)
         chat.summaries.append(summary)
         self._save(chat)

@@ -113,22 +113,24 @@ def _context_detail(report) -> str:
     if report.compacted:
         lines += [f"full chat    {report.full:,}",
                   f"recap        {report.recap_tokens:,}",
-                  f"folded in    {report.covered} messages"]
+                  f"folded in    {report.covered} of {report.messages} messages",
+                  f"sent as-is   {report.verbatim} messages"]
     else:
-        lines.append("not compacted")
+        lines += [f"messages     {report.messages}", "not compacted"]
     if not report.exact:
         lines.append("(estimated: no tokenizer)")
     return "\n".join(lines)
 
 
-def _compaction_divider(summary) -> None:
+def _compaction_divider(summary):
     """Mark where the recap takes over, with the recap itself a click away."""
-    with ui.column().classes("w-full items-stretch gap-1 py-3"):
+    with ui.column().classes("w-full items-stretch gap-1 py-3") as anchor:
         ui.separator()
         with ui.expansion(en.COMPACT_DIVIDER.format(covers=summary.covers),
                           icon="compress").classes("w-full text-xs text-muted"):
             ui.markdown(_message_md(summary.text)).classes(
                 "text-xs leading-relaxed break-words text-muted")
+    return anchor
 
 
 def _avatar(m: Message):
@@ -144,10 +146,11 @@ class _MessageView:
     closed by the time reasoning arrives; an observer can't add elements then.
     """
 
-    def __init__(self, text_md, reasoning_box=None, reasoning_md=None):
+    def __init__(self, text_md, reasoning_box=None, reasoning_md=None, row=None):
         self.text_md = text_md
         self.reasoning_box = reasoning_box
         self.reasoning_md = reasoning_md
+        self.row = row  # the whole message, for scrolling to it
 
     @property
     def is_deleted(self) -> bool:
@@ -164,7 +167,7 @@ class _MessageView:
 def _message(m: Message, on_scenario_click=None, on_edit=None) -> _MessageView:
     """Render one message row; returns handles to it (for live updates)."""
     clickable = (not m.is_user) and on_scenario_click is not None
-    with ui.row().classes("w-full gap-3 no-wrap items-start pb-4 tg-msg"):
+    with ui.row().classes("w-full gap-3 no-wrap items-start pb-4 tg-msg") as row:
         col = ui.column().classes("items-center gap-1 w-16 shrink-0")
         if clickable:
             col.classes("cursor-pointer hover:opacity-80")
@@ -196,7 +199,7 @@ def _message(m: Message, on_scenario_click=None, on_edit=None) -> _MessageView:
                 with ui.row().classes("w-full justify-end tg-msg-actions"):
                     ui.button("Edit", icon="edit", on_click=on_edit) \
                         .props("flat dense color=secondary").classes("text-xs")
-    return _MessageView(md, box, reasoning_md)
+    return _MessageView(md, box, reasoning_md, row)
 
 
 def render():
@@ -211,7 +214,7 @@ def render():
             else (names[0] if names else None)
         appstate.state.current_scenario = chat.scenario_name
     page: dict = {"inner": None, "stream_view": None, "observed": None,
-                  "refresh_context": lambda: None}
+                  "fold_anchor": None, "refresh_context": lambda: None}
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
@@ -267,6 +270,7 @@ def render():
         msgs_col.clear()
         page["inner"] = None
         page["stream_view"] = None
+        page["fold_anchor"] = None
         with msgs_col:
             if chat.chat is None:
                 with ui.column().classes("w-full h-full items-center justify-center gap-2"):
@@ -281,16 +285,20 @@ def render():
                 regenerate_index = (None if streaming
                                     else chat.chat.latest_assistant_index())
                 summary = chat.chat.active_summary()
-                divider_at = (summary.covers
-                              if summary is not None and store.compaction_divider()
-                              else None)
+                fold_at = summary.covers if summary is not None else None
+                divider_at = (fold_at if fold_at is not None
+                              and store.compaction_divider() else None)
                 for i, m in enumerate(chat.chat.messages):
                     if i == divider_at:
-                        _compaction_divider(summary)
+                        page["fold_anchor"] = _compaction_divider(summary)
                     on_edit = (None if streaming or not m.is_user
                                else lambda idx=i: edit_user_message(idx))
                     view = _message(m, on_scenario_click=open_scenario,
                                     on_edit=on_edit)
+                    # With the divider hidden the first unfolded message is the
+                    # boundary, so the jump works either way.
+                    if i == fold_at and page["fold_anchor"] is None:
+                        page["fold_anchor"] = view.row
                     if streaming and run_ is not None and i == run_.index:
                         page["stream_view"] = view
                     if i == regenerate_index:
@@ -373,7 +381,7 @@ def render():
         render_messages()
         chat_list.refresh()
         watch()
-        sync_recap_button()
+        sync_recap_controls()
         page["refresh_context"]()
         asyncio.create_task(scroll_bottom_after_render())
 
@@ -387,7 +395,7 @@ def render():
     pending_delete = {"chat_id": None}
     pending_rename = {"chat_id": None}
     pending_edit = {"chat_id": None, "index": None}
-    pending_compaction = {"draft": "", "active": False}
+    pending_compaction = {"draft": "", "active": False, "force": False, "redo": False}
 
     with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:420px;max-width:92vw"):
@@ -419,7 +427,7 @@ def render():
         compact_working = ui.row().classes("w-full items-center gap-3 py-2")
         with compact_working:
             ui.spinner(size="lg", color="primary")
-            ui.label(en.COMPACT_RUNNING).classes("text-sm")
+            compact_progress = ui.label(en.COMPACT_RUNNING).classes("text-sm")
         compact_working.set_visibility(False)
         compact_buttons = ui.row().classes("w-full justify-end gap-2")
         with compact_buttons:
@@ -432,7 +440,7 @@ def render():
 
     with ui.dialog() as recap_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:720px;max-width:92vw"):
-        ui.label("Story so far").classes("text-lg font-semibold")
+        ui.label("Context summary").classes("text-lg font-semibold")
         recap_meta = ui.label().classes("text-xs text-muted")
         with ui.column().classes("w-full overflow-y-auto").style("max-height:60vh"):
             recap_body = ui.markdown().classes("text-sm leading-relaxed break-words")
@@ -554,10 +562,22 @@ def render():
             return
         apply(outcome)
 
-    def ask_compaction(message: str, draft: str):
-        pending_compaction["draft"] = draft
+    def ask_compaction(message: str, draft: str, *, force: bool = False,
+                       redo: bool = False):
+        pending_compaction.update(draft=draft, force=force, redo=redo)
         compact_label.text = message
         compact_dialog.open()
+
+    def ask_manual_compaction():
+        """Compact on demand: the first recap early, or this one written again."""
+        if chat.chat is None:
+            return
+        summary = chat.chat.active_summary()
+        if summary is None:
+            ask_compaction(en.COMPACT_FORCE_ASK, "", force=True)
+            return
+        ask_compaction(en.COMPACT_REDO_ASK.format(covers=summary.covers),
+                       "", force=True, redo=True)
 
     def show_recap():
         summary = chat.chat.active_summary() if chat.chat else None
@@ -570,10 +590,24 @@ def render():
         recap_body.content = _message_md(summary.text)
         recap_dialog.open()
 
-    def sync_recap_button():
+    def jump_to_fold():
+        """Scroll the transcript to where the recap hands over to real messages."""
+        anchor = page["fold_anchor"]
+        if anchor is None or anchor.is_deleted:
+            ui.notify(en.NO_RECAP)
+            return
+        ui.run_javascript(
+            f'document.getElementById("{anchor.html_id}")'
+            '?.scrollIntoView({behavior: "smooth", block: "center"})')
+
+    def sync_recap_controls():
         """Only offered when a recap is actually standing in for something."""
-        recap_button.set_visibility(
-            chat.chat is not None and chat.chat.active_summary() is not None)
+        compacted = chat.chat is not None and chat.chat.active_summary() is not None
+        recap_button.set_visibility(compacted)
+        fold_button.set_visibility(compacted)
+        # Redoing replaces the recap in place; without one there is nothing yet
+        # to replace, so the same button just makes the first.
+        compact_now_button.set_text("Redo recap" if compacted else "Compact now")
 
     def set_compacting(active: bool):
         """Shut the composer while the recap generates, and say why."""
@@ -589,16 +623,26 @@ def render():
 
     async def run_compaction():
         draft = pending_compaction["draft"]
-        pending_compaction["draft"] = ""
+        force, redo = pending_compaction["force"], pending_compaction["redo"]
+        pending_compaction.update(draft="", force=False, redo=False)
         set_compacting(True)
         # persistent: a click on the backdrop mid-run would hide the only sign
         # that anything is happening.
         compact_dialog.props("persistent")
         compact_buttons.set_visibility(False)
         compact_working.set_visibility(True)
+        compact_progress.text = en.COMPACT_RUNNING
+        # A long fold is several generations; without this the spinner gives no
+        # sign of which one it is on.
+        ticker = ui.timer(0.4, lambda: compact_progress.set_text(
+            en.COMPACT_RUNNING if chat.compaction_step is None
+            else en.COMPACT_PASS.format(step=chat.compaction_step[0],
+                                        total=chat.compaction_step[1])))
         try:
-            outcome = await run.io_bound(chat.compact, draft)
+            outcome = await run.io_bound(
+                lambda: chat.compact(draft, force=force, redo=redo))
         finally:
+            ticker.deactivate()
             set_compacting(False)
             compact_working.set_visibility(False)
             compact_buttons.set_visibility(True)
@@ -677,6 +721,14 @@ def render():
                     .props("dense").classes("w-full text-xs text-muted"):
                 context_detail = ui.label().classes(
                     "font-mono text-[11px] leading-tight whitespace-pre-wrap text-muted")
+                fold_button = ui.button("Jump to fold", icon="vertical_align_top",
+                                        on_click=lambda: jump_to_fold()) \
+                    .props("flat dense color=secondary").classes("w-full text-xs mt-2")
+                fold_button.set_visibility(False)
+                compact_now_button = ui.button(
+                    "Compact now", icon="compress",
+                    on_click=lambda: ask_manual_compaction()) \
+                    .props("flat dense color=secondary").classes("w-full text-xs")
 
     context_state = {"signature": None, "busy": False}
     placeholder_state = {"text": None}

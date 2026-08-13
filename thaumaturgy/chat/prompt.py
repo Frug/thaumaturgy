@@ -32,7 +32,7 @@ def build(chat: Chat, scenario: Scenario | None, *, draft: str = "",
     summary = chat.active_summary() if compacted else None
     if summary is not None:
         history = history[summary.covers:]
-        system_parts.append(f"Story so far:\n{summary.text.strip()}")
+        system_parts.append(f"Context summary:\n{summary.text.strip()}")
 
     # Gemma-style templates raise on a leading assistant turn and no capability
     # flag reports it, so an opening line always moves into the prompt.

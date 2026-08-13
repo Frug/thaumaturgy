@@ -60,9 +60,24 @@ How long a recap may run is **Recap budget** in the parameter set on the Model
 page (default 4000 tokens, capped at 15% of the context window so the recap
 cannot crowd out the recent messages it made room for). It is a ceiling, not a
 target: models stop when they judge the summary complete, so the recap is
-usually shorter. The recap instructions live in `compaction.yaml` in the data
-dir and can be edited. Whether the chat draws a divider where the recap takes
-over is a Settings-page toggle.
+usually shorter. What the summarizer is asked — its system message, the
+instruction, and the heading that introduces a previous recap — is editable
+under **Recap instructions** on the Settings page and stored in
+`compaction.yaml` in the data dir; an unedited file picks up new defaults
+automatically.
+
+**Recap detail** on the Settings page chooses how the recap is written. One pass
+condenses the whole fold in a single generation, capped at the recap budget.
+Several passes split the fold into spans of about 10,000 tokens (at most eight),
+give each its own generation and an equal share of the budget, and join the
+parts in order under a heading each — one generation per span rather than one in
+all, so it trades minutes for a longer, sectioned recap.
+
+The chat's Context panel breaks down what the model is being sent, jumps to the
+point in the transcript where the recap takes over, shows the recap itself, and
+compacts on demand — **Compact now** on an uncompacted chat, **Redo recap** to
+write the current one again after changing the budget or the instructions.
+Whether the chat draws a divider at that point is a Settings-page toggle.
 
 ## Credits
 
