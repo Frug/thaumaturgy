@@ -272,8 +272,87 @@ def test_the_strategy_setting_chooses_one_pass_or_several(monkeypatch):
     store.save_compaction_strategy("single")
 
 
+def compacting(monkeypatch, strategy: str) -> list[tuple[int, str]]:
+    """Capture what each pass is asked for, without generating anything."""
+    calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(compaction, "_generate", lambda messages, budget:
+                        calls.append((budget, messages[-1]["content"]))
+                        or f"part {len(calls)}")
+    monkeypatch.setattr(store, "compaction_strategy", lambda: strategy)
+    return calls
+
+
+def test_recompacting_in_passes_keeps_the_earlier_recap_as_it_stands(monkeypatch):
+    calls = compacting(monkeypatch, "passes")
+    c = conversation(turns=200, size=1200)
+    recap(c, 100, text="Long ago, " * 200)
+    c.summaries[-1].tokens = 600
+    summary = compaction.run(c, SCENARIO, compaction.Plan(
+        start=100, covers=300, used=60_000, total=100_000, budget=4000))
+
+    # Kept whole under a heading for its span, with the new spans after it.
+    assert not any("Long ago" in ask for _, ask in calls)
+    assert summary.text.startswith("## Turns 1-100\n\nLong ago,")
+    assert "## Turns 101-" in summary.text
+    # Its tokens come out of the budget, so the whole recap still fits.
+    assert sum(budget for budget, _ in calls) <= 4000 - 600
+
+
+def test_a_recap_with_no_room_left_beside_it_is_rebuilt(monkeypatch):
+    calls = compacting(monkeypatch, "passes")
+    c = conversation(turns=200, size=1200)
+    recap(c, 100, text="Long ago, " * 1200)
+    c.summaries[-1].tokens = 3900          # nearly the whole budget on its own
+    summary = compaction.run(c, SCENARIO, compaction.Plan(
+        start=100, covers=300, used=60_000, total=100_000, budget=4000))
+
+    # Keeping it would overrun the budget, so the recap is written again from
+    # the messages, starting at the first turn rather than the 101st.
+    assert "Long ago" not in summary.text
+    assert summary.text.startswith("## Turns 1-")
+    assert "user 0" in calls[0][1]
+
+
+def test_a_rebuild_ignores_the_recap_a_chat_already_has(monkeypatch):
+    # What Redo recap asks for: a target starting at message one.
+    calls = compacting(monkeypatch, "passes")
+    c = conversation(turns=200, size=1200)
+    recap(c, 100, text="Long ago, " * 200)
+    summary = compaction.run(c, SCENARIO, compaction.Plan(
+        start=0, covers=300, used=60_000, total=100_000, budget=4000))
+
+    assert "Long ago" not in summary.text
+    assert not any("Long ago" in ask for _, ask in calls)
+    assert "user 0" in calls[0][1]
+    assert summary.covers == 300
+
+
+def test_one_pass_still_condenses_the_earlier_recap_with_the_new_turns(monkeypatch):
+    calls = compacting(monkeypatch, "single")
+    c = conversation(turns=20, size=100)
+    recap(c, 10, text="Long ago, " * 20)
+    compaction.run(c, SCENARIO, compaction.Plan(
+        start=10, covers=30, used=6000, total=100_000, budget=4000))
+
+    # The one generation has to hold the whole recap, earlier part included.
+    assert len(calls) == 1 and "Long ago" in calls[0][1]
+
+
 def test_passes_are_capped_so_a_huge_fold_still_finishes(monkeypatch):
     monkeypatch.setattr(compaction, "PASS_INPUT_TOKENS", 100)
     spans = compaction._split_into_passes(conversation(turns=400).messages, 100)
     assert len(spans) <= compaction.MAX_PASSES
     assert sum(len(s) for s in spans) == 801       # every message lands in one
+
+
+def test_a_small_budget_takes_fewer_passes(monkeypatch):
+    calls = []
+    monkeypatch.setattr(compaction, "_generate",
+                        lambda messages, budget: calls.append(budget) or "part")
+    c = conversation(turns=200, size=1200)
+    store.save_compaction_strategy("passes")
+    compaction.run(c, SCENARIO, compaction.Plan(start=0, covers=300, used=9000,
+                                                total=12_000, budget=600))
+    store.save_compaction_strategy("single")
+    # Two shares at the floor rather than seven below it, and still in budget.
+    assert calls == [300, 300]
