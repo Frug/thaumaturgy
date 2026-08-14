@@ -194,6 +194,15 @@ class LlamaServer:
         return self.proc is not None and self.proc.poll() is None
 
     @property
+    def unloadable(self) -> bool:
+        """Whether stop() has anything left to do.
+
+        True for a process that has already died as well as a live one: it still
+        holds the model and port on record, and unloading is what clears them.
+        """
+        return self.proc is not None
+
+    @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
