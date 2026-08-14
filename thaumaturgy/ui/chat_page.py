@@ -13,7 +13,7 @@ from nicegui import app, run, ui
 from thaumaturgy import appstate, engine, store
 from thaumaturgy.chat import Message, Step, chat
 from thaumaturgy.lang import en
-from thaumaturgy.ui.outcomes import notify
+from thaumaturgy.ui.outcomes import notify, toast
 
 # Each streamed update re-parses the whole message as markdown, so cap the
 # re-render rate and prefer to land it on a newline boundary.
@@ -540,7 +540,9 @@ def render():
             if retried:
                 # A recap this big is a prompt problem, not something another
                 # round of the same would fix.
-                ui.notify(en.COMPACT_STILL_TOO_LONG, type="warning")
+                # Reached from run_compaction as well, whose await is long
+                # enough for the page to have gone.
+                toast(en.COMPACT_STILL_TOO_LONG, "warning")
                 return
             ask_compaction(outcome.message, text)
             return
