@@ -290,12 +290,11 @@ def test_recompacting_in_passes_keeps_the_earlier_recap_as_it_stands(monkeypatch
     summary = compaction.run(c, SCENARIO, compaction.Plan(
         start=100, covers=300, used=60_000, total=100_000, budget=4000))
 
-    # The earlier recap is never sent to be condensed again; it is kept whole,
-    # under a heading for the span it covers, and the new spans follow it.
+    # Kept whole under a heading for its span, with the new spans after it.
     assert not any("Long ago" in ask for _, ask in calls)
     assert summary.text.startswith("## Turns 1-100\n\nLong ago,")
     assert "## Turns 101-" in summary.text
-    # Its tokens come out of the budget, so the recap as a whole still fits.
+    # Its tokens come out of the budget, so the whole recap still fits.
     assert sum(budget for budget, _ in calls) <= 4000 - 600
 
 
@@ -307,16 +306,15 @@ def test_a_recap_with_no_room_left_beside_it_is_rebuilt(monkeypatch):
     summary = compaction.run(c, SCENARIO, compaction.Plan(
         start=100, covers=300, used=60_000, total=100_000, budget=4000))
 
-    # Keeping it would push the recap past its budget, so the span is written
-    # again from the messages instead — from the first turn, not the 101st.
+    # Keeping it would overrun the budget, so the recap is written again from
+    # the messages, starting at the first turn rather than the 101st.
     assert "Long ago" not in summary.text
     assert summary.text.startswith("## Turns 1-")
     assert "user 0" in calls[0][1]
 
 
 def test_a_rebuild_ignores_the_recap_a_chat_already_has(monkeypatch):
-    # What Redo recap asks for: a target starting at message one, so the recap
-    # is written from the transcript rather than from itself.
+    # What Redo recap asks for: a target starting at message one.
     calls = compacting(monkeypatch, "passes")
     c = conversation(turns=200, size=1200)
     recap(c, 100, text="Long ago, " * 200)
@@ -336,7 +334,7 @@ def test_one_pass_still_condenses_the_earlier_recap_with_the_new_turns(monkeypat
     compaction.run(c, SCENARIO, compaction.Plan(
         start=10, covers=30, used=6000, total=100_000, budget=4000))
 
-    # One generation has to hold the whole recap, so it has no choice.
+    # The one generation has to hold the whole recap, earlier part included.
     assert len(calls) == 1 and "Long ago" in calls[0][1]
 
 

@@ -5,10 +5,9 @@ record naming how many leading messages it stands for; `prompt.build` swaps
 them for its text when assembling a request, and the user's view stays whole.
 
 Re-compaction is incremental: only the turns since the last recap are folded,
-so a long chat never re-reads its whole history. What becomes of the recap
-already there depends on the strategy — several passes keep it as it stands and
-write beside it, while one pass has to condense it again along with the new
-turns. A target starting at message zero rebuilds instead, keeping nothing.
+so a long chat never re-reads its whole history. Several passes keep that recap
+as it stands and write beside it; one pass condenses it again along with the
+new turns. A target starting at message zero rebuilds, keeping nothing.
 """
 
 import math
@@ -268,27 +267,25 @@ def _split_into_passes(messages: list[Message], limit: int,
         passes.append(current)
     if len(passes) <= cap:
         return passes
-    # Too many for the time they would take, or for the budget to divide into
-    # useful shares: regroup into `cap` even spans.
+    # Too many for the time they would take, or for the budget to divide
+    # usefully: regroup into `cap` even spans.
     per = math.ceil(len(messages) / cap)
     return [messages[i:i + per] for i in range(0, len(messages), per)]
 
 
 def _pass_budgets(passes: list[list[Message]], budget: int) -> list[int]:
-    """Divide the recap budget between passes, by how much each has to condense.
+    """Divide the recap budget between passes, weighted by how much each holds.
 
-    Spans come out uneven — the last one holds whatever was left — so an even
+    Spans come out uneven, the last one holding whatever was left, so an even
     split would give a handful of turns the same room as a full span. The total
-    stays within the budget, which is what keeps a recap from crowding out the
-    recent turns.
+    stays within the budget.
     """
     weights = [max(engine.estimate_tokens("\n".join(m.text or "" for m in span)), 1)
                for span in passes]
     total = sum(weights)
     shares = [max(MIN_PASS_TOKENS, int(budget * w / total)) for w in weights]
-    # A span too small for its floor is raised to it, and the passes with room
-    # to spare give that back in proportion: the recap has to fit the budget
-    # however it is divided, and the weighting has to survive the trim.
+    # Raising a small span to its floor is paid for by the passes with room to
+    # spare, in proportion, so the total still fits.
     over = sum(shares) - budget
     spare = [s - MIN_PASS_TOKENS for s in shares]
     if over > 0 and sum(spare) > 0:
@@ -308,8 +305,7 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
     """
     doc = store.load_compaction_prompt()
     one_pass = store.compaction_strategy() == "single"
-    # A target starting at 0 is a rebuild: everything is written again from the
-    # messages, whatever recap the chat already has.
+    # A target starting at 0 is a rebuild: the recap the chat has is ignored.
     previous = chat.active_summary() if target.start > 0 else None
     start, budget = target.start, target.budget
     kept, carried = "", ""
@@ -317,36 +313,32 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
         # Recaps written before the count was recorded fall back to an estimate.
         held = previous.tokens or engine.estimate_tokens(previous.text)
         if one_pass:
-            # The one generation has to hold the whole recap, so the earlier one
-            # goes through the summarizer again along with the new turns.
+            # The one generation has to hold the whole recap, earlier part
+            # included, so that part is condensed again.
             carried = (doc["carry"] + "\n" + previous.text.strip())
         elif budget - held >= MIN_PASS_TOKENS:
-            # Passes are sized by their own span, so nothing forces the earlier
-            # recap through the summarizer a second time. Keeping it as it
-            # stands is what stops a recap thinning out on every compaction.
+            # A pass only sees its own span, so the earlier recap can stand as
+            # it is. Re-condensing it thins it out a little every time.
             kept = previous.text.strip()
             budget -= held
         else:
-            # No room left to write beside it: rebuild rather than let the
-            # recap grow past the budget it is capped at.
+            # No room to write beside it: rebuild rather than overrun the budget.
             start = 0
 
     folded = chat.messages[start:target.covers]
     # One generation covers the whole fold, or one per span of it. A small
-    # budget takes fewer spans: below MIN_PASS_TOKENS each, more passes only
-    # buy shares too small to say anything with.
+    # budget takes fewer spans, since shares below MIN_PASS_TOKENS say nothing.
     passes = ([folded] if one_pass
               else _split_into_passes(
                   folded, PASS_INPUT_TOKENS,
                   cap=max(1, min(MAX_PASSES, budget // MIN_PASS_TOKENS))))
-    # Each pass gets its share of the budget, and its own chance to spend it.
     budgets = _pass_budgets(passes, budget)
     system = doc["system"].strip()
 
     multi = len(passes) > 1 or bool(kept)
     parts, first_turn = [], start + 1
     if kept:
-        # An earlier recap written in one pass has no heading of its own.
+        # A recap written in one pass has no heading of its own.
         parts.append(kept if kept.lstrip().startswith("## Turns")
                      else f"## Turns 1-{start}\n\n{kept}")
     for index, span in enumerate(passes):
@@ -357,8 +349,7 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
             - engine.estimate_tokens(system + doc["instruction"] + carried)
         transcript = _transcript(span, max(room, 512))
         last_turn = first_turn + len(span) - 1
-        # A span with nothing in it is skipped, unless it is the one generation
-        # holding the earlier recap: dropping that would lose the history.
+        # An empty span is skipped, unless it carries the earlier recap.
         if not transcript.strip() and not carried:
             first_turn = last_turn + 1
             continue

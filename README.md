@@ -74,19 +74,18 @@ order under a heading each — one generation per span rather than one in all, s
 it trades minutes for a longer, sectioned recap.
 
 Compaction is incremental: only the turns since the last recap are folded. With
-several passes the recap already there is kept exactly as it stands, under a
-heading for the span it covers, and the new spans are written beside it out of
-what is left of the budget — a pass only ever sees its own span, so there is
-nothing to gain by condensing that recap a second time and everything to lose,
-since each round of re-condensing thins it out. One pass has no such choice: its
-single generation has to hold the whole recap, so the earlier one goes back
-through the summarizer along with the new turns. When an existing recap leaves
-too little room to write beside it, the whole recap is rebuilt from the messages
-rather than allowed to grow past its budget.
+several passes the recap already there is kept as it stands, under a heading for
+the span it covers, and the new spans are written beside it out of what is left
+of the budget; a pass only ever sees its own span, and each round of
+re-condensing would thin the recap out. One pass has no such choice: its single
+generation has to hold the whole recap, so the earlier one goes back through the
+summarizer along with the new turns. When an existing recap leaves too little
+room to write beside it, the recap is rebuilt from the messages rather than
+allowed to outgrow its budget.
 
-**Redo recap** always rebuilds: the recap is written again from the first
-message, carrying nothing over from the one it replaces. That is what makes it
-the way to fix a recap that came out badly, or to apply edited instructions.
+**Redo recap** always rebuilds, writing from the first message and carrying
+nothing over from the recap it replaces: the way to fix one that came out badly,
+or to apply edited instructions.
 
 The chat's Context panel breaks down what the model is being sent, jumps to the
 point in the transcript where the recap takes over, shows the recap itself, and

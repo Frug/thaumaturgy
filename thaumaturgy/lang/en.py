@@ -22,9 +22,9 @@ COMPACT_FORCE_ASK = ("Compact this chat now, before it needs it? The oldest "
                      "place.")
 COMPACT_REDO_ASK = ("Write the recap again over the same {covers} messages, "
                     "replacing the current one? It is built from the messages "
-                    "themselves, so nothing of the current recap is carried "
-                    "over. Use this after changing the recap budget or the "
-                    "recap instructions.")
+                    "themselves, so nothing of the current recap carries over. "
+                    "Use this after changing the recap budget or the recap "
+                    "instructions.")
 COMPACT_RUNNING = "Summarizing the earlier messages…"
 COMPACT_PASS = "Summarizing part {step} of {total}…"
 COMPACT_DONE = "Folded {folded} messages into a recap."
@@ -52,13 +52,12 @@ COMPACTION_HELP = (
 COMPACTION_STRATEGY_HELP = (
     "One pass condenses the whole fold in a single generation, capped at the "
     "recap budget. Several passes split the fold into spans of about 10,000 "
-    "tokens — at most eight — and give each span its own generation and a "
-    "share of the budget, then join the parts in order under a heading each. "
-    "That is one generation per span rather than one in all, so a long chat "
-    "takes correspondingly longer, and the recap arrives as sections rather "
-    "than as one piece. Compacting again keeps the sections already written "
-    "and adds to them, where one pass has to condense the earlier recap a "
-    "second time along with the new turns."
+    "tokens (at most eight), give each span its own generation and a share of "
+    "the budget, then join the parts in order under a heading each. That is "
+    "one generation per span rather than one in all, so a long chat takes "
+    "correspondingly longer and the recap arrives as sections. Compacting "
+    "again keeps the sections already written and adds to them, where one "
+    "pass condenses the earlier recap a second time along with the new turns."
 )
 RECAP_PROMPT_HELP = (
     "What the model is asked when it writes a recap. Saved to compaction.yaml "

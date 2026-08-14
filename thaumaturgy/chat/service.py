@@ -283,8 +283,8 @@ class ChatService:
         whatever the page last saw, which may be several turns old.
 
         `redo` retires the newest recap and rebuilds from message one, carrying
-        nothing over from it: the way to re-run a recap after changing the
-        budget or the instructions, or to replace one that came out badly.
+        nothing over: the way to re-run one after changing the budget or the
+        instructions, or to replace a recap that came out badly.
         """
         if self.chat is None:
             return Outcome(Step.IDLE)
@@ -297,8 +297,7 @@ class ChatService:
         retired = chat.summaries.pop() if (redo and chat.summaries) else None
         target = self.plan_compaction(draft, force=force)
         if retired is not None and target is not None:
-            # Start from message one, over at least the span the retired recap
-            # held: a redo is asked for when that recap is what needs replacing.
+            # From message one, over at least what the retired recap held.
             target = replace(target, start=0,
                              covers=max(target.covers, retired.covers))
         if target is None or not target.possible:
