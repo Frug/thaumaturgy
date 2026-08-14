@@ -488,9 +488,10 @@ def _model_card(bridge):
             with ui.row().classes("w-full gap-2"):
                 load_btn = ui.button("Load model", icon="play_arrow") \
                     .props("color=positive unelevated")
-                ui.button("Unload", icon="stop",
-                          on_click=lambda: (engine.server.stop(), refresh_status(),
-                                            refresh_preview())) \
+                unload_btn = ui.button("Unload", icon="stop",
+                                       on_click=lambda: (engine.server.stop(),
+                                                         refresh_status(),
+                                                         refresh_preview())) \
                     .props("color=negative unelevated")
                 ui.button("Download New Model", icon="download", on_click=dl_dialog.open) \
                     .props("color=primary unelevated")
@@ -556,6 +557,9 @@ def _model_card(bridge):
         log_timer = app.timer(1.0, refresh_server_output, immediate=False)
 
         def refresh_status():
+            # Offered for a server that died on its own as well as a live one:
+            # unloading is what clears the dead process's model off the page.
+            unload_btn.set_enabled(engine.server.unloadable)
             if engine.server.running:
                 extra = f" · ctx {engine.server.n_ctx}" if engine.server.n_ctx else ""
                 status.text = f"● Loaded: {engine.server.model}{extra}"

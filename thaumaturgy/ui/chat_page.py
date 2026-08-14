@@ -735,9 +735,12 @@ def render():
     context_state = {"signature": None, "busy": False}
     placeholder_state = {"text": None}
 
-    def sync_placeholder():
-        text = en.CHAT_PLACEHOLDER if engine.server.running \
-            else en.CHAT_PLACEHOLDER_NO_MODEL
+    def sync_model_state():
+        """Follow the model coming and going, which can happen on another page."""
+        running = engine.server.running
+        # Writing a recap is a generation like any other.
+        compact_now_button.set_enabled(running)
+        text = en.CHAT_PLACEHOLDER if running else en.CHAT_PLACEHOLDER_NO_MODEL
         if text != placeholder_state["text"]:
             placeholder_state["text"] = text
             input_box.props(f'placeholder="{text}"')
@@ -750,7 +753,7 @@ def render():
             # Counting means tokenizing through the same server the summarizer
             # is generating on, and the meter is showing that instead anyway.
             return
-        sync_placeholder()
+        sync_model_state()
         messages = chat.chat.messages if chat.chat else []
         last = messages[-1].text if messages else ""
         total = chat.context_total()
@@ -766,7 +769,9 @@ def render():
         try:
             draft = _normalize_user_markdown(input_box.value or "")
             report = await run.io_bound(chat.context_report, draft)
-            context_counter.text = _context_label(report.used, total, report.exact)
+            context_counter.text = (
+                _context_label(report.used, total, report.exact)
+                if engine.server.running else en.CONTEXT_NO_MODEL)
             context_detail.text = _context_detail(report)
         finally:
             context_state["busy"] = False
@@ -774,7 +779,7 @@ def render():
     def schedule_context_refresh(_=None):
         asyncio.create_task(refresh_context_counter())
 
-    sync_placeholder()
+    sync_model_state()
     page["refresh_context"] = schedule_context_refresh
     input_box.on_value_change(schedule_context_refresh)
     context_timer = app.timer(1.0, refresh_context_counter, immediate=False)

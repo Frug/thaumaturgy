@@ -10,6 +10,9 @@ CHAT_TOO_LONG = ("The most recent messages already fill the context window on "
 # Chat composer, which points at the Model page while nothing is loaded.
 CHAT_PLACEHOLDER = "Message…  (Ctrl+Enter to send)"
 CHAT_PLACEHOLDER_NO_MODEL = "Load model from the Model screen to start."
+# With no server there is no tokenizer and no window to measure against, so the
+# meter says what to do instead of quoting a percentage of a guess.
+CONTEXT_NO_MODEL = "Load a model to measure context"
 
 # Compaction: asking to condense a chat, and explaining what that does.
 COMPACT_ASK = ("This chat has outgrown the context window ({used:,} of "
