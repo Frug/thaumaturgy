@@ -78,6 +78,15 @@ RECAP_PROMPT_PLACEHOLDERS = (
 RECAP_PROMPT_EMPTY = "Every field is needed. Restore defaults to refill one."
 RECAP_PROMPT_RESTORED = "Defaults loaded — save to keep them."
 
+# Scenarios page.
+SCENARIO_VARIABLES_HELP = (
+    "A {{name}} in the context or the opening text is replaced by its value "
+    "before the model sees it; a name with nothing behind it is left as "
+    "written. The context is filled in on every reply, so a changed value "
+    "reaches chats already under way. The opening text is filled in once, as "
+    "a chat starts."
+)
+
 LOG_HELP = (
     "Off by default. When set, llama-server's output is mirrored to "
     "llama-server.log and each editing attempt is appended to editing.jsonl. "

@@ -42,9 +42,10 @@ class ChatService:
         return [Scenario.from_dict(s) for s in store.list_scenarios()]
 
     def scenario(self) -> Scenario | None:
+        """The open scenario, with its variables already substituted in."""
         for s in self.scenarios():
             if s.name == self.scenario_name:
-                return s
+                return s.filled()
         return None
 
     def select_scenario(self, name: str | None) -> Outcome:

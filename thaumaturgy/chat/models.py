@@ -5,7 +5,8 @@ a loaded model or a disk.
 """
 
 import hashlib
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from thaumaturgy.chat import reply
@@ -200,6 +201,24 @@ class Chat:
         return out
 
 
+# A {{name}} to stand a variable's value in for, spaces inside the braces
+# allowed. Nothing but the name between them, so an unclosed brace or a literal
+# { in the text can't swallow the rest of a paragraph.
+VARIABLE_RE = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
+
+
+def fill(text: str, variables: dict[str, str]) -> str:
+    """Replace each {{name}} in `text` with its value, in one pass.
+
+    A name with no variable behind it is left as written: a half-finished
+    scenario should read as one rather than quietly losing the placeholder.
+    Values are substituted as they are, so a {{name}} inside a value stays put.
+    """
+    if not text or not variables:
+        return text
+    return VARIABLE_RE.sub(lambda m: variables.get(m.group(1), m.group(0)), text)
+
+
 @dataclass(frozen=True)
 class Scenario:
     """A conversation setup: who the model is playing, and how it opens."""
@@ -207,9 +226,24 @@ class Scenario:
     name: str
     context: str = ""
     opening_text: str = ""
+    # {{name}} -> the text it stands for, in the context and the opening.
+    variables: dict[str, str] = field(default_factory=dict)
     file: str | None = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Scenario":
+        variables = d.get("variables")
         return cls(name=d.get("name") or "", context=d.get("context") or "",
-                   opening_text=d.get("opening_text") or "", file=d.get("_file"))
+                   opening_text=d.get("opening_text") or "",
+                   variables=dict(variables) if isinstance(variables, dict) else {},
+                   file=d.get("_file"))
+
+    def filled(self) -> "Scenario":
+        """This scenario with its variables substituted into the text.
+
+        Applied where the scenario is handed out for use, so the prompt, the
+        opening message, and the info panel all show what the model is told.
+        The editor keeps the placeholders by working from the stored dicts.
+        """
+        return replace(self, context=fill(self.context, self.variables),
+                       opening_text=fill(self.opening_text, self.variables))

@@ -2,7 +2,7 @@
 
 import pytest
 
-from thaumaturgy.chat import Chat, Message, Role, Scenario, prompt, reply
+from thaumaturgy.chat import Chat, Message, Role, Scenario, models, prompt, reply
 
 SCENARIO = Scenario(name="Grondar", context="You are Grondar.",
                     opening_text="The tavern door swings open.")
@@ -126,6 +126,32 @@ def test_the_opening_message_comes_from_the_scenario():
     assert prompt.opening_message(Scenario(name="x")) is None
 
 
+@pytest.mark.parametrize("text,expected", [
+    ("Hello {{who}}.", "Hello Grondar."),
+    ("{{ who }} and {{who}}", "Grondar and Grondar"),   # spaces inside, repeats
+    ("{{stranger}}", "{{stranger}}"),                   # no variable: left alone
+    ("{{empty}}!", "!"),
+    ("{ who } {{}} {{a{{who}}", "{ who } {{}} {{aGrondar"),  # nothing to fill
+    ("{{self}}", "{{who}}"),                            # values aren't re-filled
+])
+def test_filling_in_variables(text, expected):
+    assert models.fill(text, {"who": "Grondar", "empty": "",
+                              "self": "{{who}}"}) == expected
+
+
+def test_a_scenario_fills_its_own_text():
+    s = Scenario(name="s", context="You are {{who}}.",
+                 opening_text="{{who}} looks up.", variables={"who": "Grondar"})
+    filled = s.filled()
+    assert filled.context == "You are Grondar."
+    assert filled.opening_text == "Grondar looks up."
+    assert prompt.opening_message(filled).text == "Grondar looks up."
+    # The scenario itself is untouched, so the editor still shows placeholders.
+    assert s.context == "You are {{who}}."
+    system = prompt.build(conversation(), filled)[0]["content"]
+    assert "You are Grondar." in system and "{{" not in system
+
+
 def test_serialisation_round_trip():
     c = conversation()
     c.messages[2].finish_reason = "length"
@@ -137,3 +163,5 @@ def test_serialisation_round_trip():
     assert back.messages[2].finish_limit == "context"
     assert "reasoning" not in c.messages[1].to_dict()  # empty keys stay out
     assert Scenario.from_dict({"name": "n", "context": "c", "_file": "slug"}).file == "slug"
+    assert Scenario.from_dict({"name": "n"}).variables == {}
+    assert Scenario.from_dict({"name": "n", "variables": {"a": "b"}}).variables == {"a": "b"}
