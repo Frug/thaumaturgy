@@ -47,6 +47,18 @@ examples live in `thaumaturgy/defaults/scenarios/` and are copied into
 local scenarios and can be edited or deleted in the UI. The whole `data/`
 directory is gitignored, so those local changes do not show up as Git changes.
 
+## Scenario Variables
+
+A scenario can carry named values, edited as key/value pairs on the Scenarios
+page and saved under `variables:` in its YAML. Write `{{name}}` in the scenario
+context or the opening text and the value takes its place before the model sees
+it; a name with no variable behind it is left as written, so a half-finished
+scenario reads as one. The context is filled in on every reply, so changing a
+value reaches chats already under way; the opening text is filled in once, when
+a chat starts, and the line it opened with then belongs to that chat. Only the
+scenario's own text is substituted — nothing rewrites what has been said in the
+transcript.
+
 ## Long Chats
 
 A chat that outgrows the model's context window stops and offers to compact

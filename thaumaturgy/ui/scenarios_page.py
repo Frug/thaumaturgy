@@ -3,12 +3,16 @@
 from nicegui import ui
 
 from thaumaturgy import store
+from thaumaturgy.lang import en
 
 
 def render():
     """Build the Scenarios page inside the current layout container."""
     scenarios = store.list_scenarios()
-    state = {"selected": 0 if scenarios else None}
+    # "variables" is edited as a list of [name, value] pairs, not the dict it is
+    # saved as: a name is blank while it's being typed, and two rows can hold
+    # the same one for as long as it takes to finish renaming the second.
+    state: dict = {"selected": 0 if scenarios else None, "variables": []}
     guard = {"loading": False}
     fields: dict[str, ui.element] = {}
 
@@ -18,10 +22,13 @@ def render():
 
     def load_fields():
         guard["loading"] = True
-        scenario = current() or {"name": "", "context": "", "opening_text": ""}
+        scenario = current() or {"name": "", "context": "", "opening_text": "",
+                                 "variables": {}}
         fields["name"].value = scenario["name"]
         fields["context"].value = scenario["context"]
         fields["opening_text"].value = scenario["opening_text"]
+        state["variables"] = [[k, v] for k, v in scenario["variables"].items()]
+        variable_rows.refresh()
         fields["editor"].set_visibility(state["selected"] is not None)
         fields["empty"].set_visibility(state["selected"] is None)
         guard["loading"] = False
@@ -44,6 +51,7 @@ def render():
             "name": unique_new_name(),
             "context": "",
             "opening_text": "",
+            "variables": {},
             "_file": None,
         }
         store.save_scenario(s)
@@ -67,6 +75,47 @@ def render():
         scenario[key] = fields[key].value
         if key == "name":
             scenario_list.refresh()
+
+    def write_variables():
+        """Fold the edited rows back into the scenario's dict of variables.
+
+        Unnamed rows are left out, and of two rows sharing a name the later one
+        wins — the same reading the file gets once it is saved.
+        """
+        scenario = current()
+        if guard["loading"] or scenario is None:
+            return
+        scenario["variables"] = {name.strip(): value
+                                 for name, value in state["variables"]
+                                 if name.strip()}
+
+    def edit_variable(i: int, part: int, value: str):
+        state["variables"][i][part] = value
+        write_variables()
+
+    def add_variable():
+        state["variables"].append(["", ""])
+        write_variables()
+        variable_rows.refresh()
+
+    def remove_variable(i: int):
+        del state["variables"][i]
+        write_variables()
+        variable_rows.refresh()
+
+    @ui.refreshable
+    def variable_rows():
+        for i, (name, value) in enumerate(state["variables"]):
+            with ui.row().classes("w-full gap-2 no-wrap items-center"):
+                ui.input(placeholder="name", value=name,
+                         on_change=lambda e, i=i: edit_variable(i, 0, e.value)) \
+                    .classes("w-40 tg-field").props("filled dense")
+                ui.input(placeholder="value", value=value,
+                         on_change=lambda e, i=i: edit_variable(i, 1, e.value)) \
+                    .classes("flex-1 tg-field").props("filled dense")
+                ui.button(icon="close", on_click=lambda i=i: remove_variable(i)) \
+                    .props("flat dense round color=negative") \
+                    .tooltip("Remove this variable")
 
     def save_current():
         scenario = current()
@@ -120,6 +169,13 @@ def render():
                 fields["opening_text"] = ui.textarea(
                     "Opening text", on_change=lambda: write_back("opening_text")) \
                     .classes("w-full tg-field").props('filled input-style="height:180px"')
+
+                with ui.column().classes("w-full gap-2 mt-2"):
+                    ui.label("Variables").classes("text-sm font-medium")
+                    ui.label(en.SCENARIO_VARIABLES_HELP).classes("text-xs text-muted")
+                    variable_rows()
+                    ui.button("Add variable", icon="add", on_click=add_variable) \
+                        .props("flat dense color=secondary").classes("self-start text-xs")
 
                 with ui.row().classes("w-full mt-2"):
                     ui.button("Save scenario", icon="save", on_click=save_current) \

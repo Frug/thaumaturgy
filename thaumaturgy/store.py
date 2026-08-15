@@ -496,6 +496,21 @@ def scenarios_dir():
     return sub_dir("scenarios")
 
 
+def _as_variables(value) -> dict:
+    """A scenario's {{name}} -> value pairs, as strings on both sides.
+
+    These files are hand-editable, so a number or a date written unquoted comes
+    back as one; it stands for text in the scenario either way. A name with
+    nothing to put in the braces is dropped.
+    """
+    out = {}
+    for name, val in _as_mapping(value).items():
+        name = str(name).strip()
+        if name and not isinstance(val, (dict, list)):
+            out[name] = "" if val is None else str(val)
+    return out
+
+
 def _slug(name: str) -> str:
     keep = "".join(c if (c.isalnum() or c in " -_") else "_" for c in (name or "")).strip()
     return keep or "unnamed"
@@ -521,6 +536,7 @@ def list_scenarios() -> list[dict]:
             "name": data.get("name", p.stem),
             "context": data.get("context", ""),
             "opening_text": data.get("opening_text", ""),
+            "variables": _as_variables(data.get("variables")),
             "_file": p.stem,
         })
     out.sort(key=lambda s: s["name"].lower())
@@ -539,6 +555,9 @@ def save_scenario(scenario: dict) -> None:
         "context": scenario.get("context", ""),
         "opening_text": scenario.get("opening_text", ""),
     }
+    variables = _as_variables(scenario.get("variables"))
+    if variables:  # left out entirely rather than written as an empty mapping
+        data["variables"] = variables
     (scenarios_dir() / f"{new_slug}.yaml").write_text(
         yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
     scenario["_file"] = new_slug
