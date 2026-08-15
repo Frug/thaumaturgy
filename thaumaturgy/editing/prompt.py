@@ -8,6 +8,7 @@ passage.
 
 from dataclasses import dataclass
 
+from thaumaturgy import prompting
 from thaumaturgy.editing import spans as spans_mod
 from thaumaturgy.editing.models import Job
 from thaumaturgy.editing.validator import flatten
@@ -68,8 +69,7 @@ class PromptBuilder:
         instr = self.job.instructions
         before, after = self.context(index)
 
-        # The passage's own opening and closing words turn "the entire passage"
-        # into checkable anchors. Without them the model decides for itself
+        # Anchors the model can be held to: without them it decides for itself
         # where the interesting part starts and stops, and returns only that.
         words = flatten(target).split()
         instruction = (instr.passage_instruction
@@ -95,11 +95,5 @@ class PromptBuilder:
             # Chat templates require alternating roles; merge into one user turn.
             ask = f"{context}\n\n{ask}"
         turns.append({"role": "user", "content": ask})
-
-        system = instr.system_prompt.strip()
-        if not system:
-            return turns
-        if self.supports_system_role:
-            return [{"role": "system", "content": system}, *turns]
-        turns[0]["content"] = f"{system}\n\n{turns[0]['content']}"
-        return turns
+        return prompting.with_system(turns, instr.system_prompt,
+                                     self.supports_system_role)

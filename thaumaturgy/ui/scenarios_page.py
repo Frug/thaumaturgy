@@ -9,9 +9,8 @@ from thaumaturgy.lang import en
 def render():
     """Build the Scenarios page inside the current layout container."""
     scenarios = store.list_scenarios()
-    # "variables" is edited as a list of [name, value] pairs, not the dict it is
-    # saved as: a name is blank while it's being typed, and two rows can hold
-    # the same one for as long as it takes to finish renaming the second.
+    # Variables edit as [name, value] pairs, not the dict they save as: a name
+    # is blank while it is typed, and two rows can share one until renamed.
     state: dict = {"selected": 0 if scenarios else None, "variables": []}
     guard = {"loading": False}
     fields: dict[str, ui.element] = {}
@@ -77,11 +76,7 @@ def render():
             scenario_list.refresh()
 
     def write_variables():
-        """Fold the edited rows back into the scenario's dict of variables.
-
-        Unnamed rows are left out, and of two rows sharing a name the later one
-        wins — the same reading the file gets once it is saved.
-        """
+        """Fold the rows back into the scenario, the later of two names winning."""
         scenario = current()
         if guard["loading"] or scenario is None:
             return

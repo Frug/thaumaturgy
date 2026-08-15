@@ -1,16 +1,7 @@
 """Turning a chat and its scenario into chat-completion messages."""
 
+from thaumaturgy import prompting
 from thaumaturgy.chat.models import Chat, Message, Role, Scenario
-
-
-def _prepend_to_first_user(messages: list[dict], prefix: str) -> list[dict]:
-    for msg in messages:
-        if msg["role"] == "user":
-            msg["content"] = f"{prefix}\n\n{msg['content']}".strip()
-            return messages
-    if prefix:
-        messages.insert(0, {"role": "user", "content": prefix})
-    return messages
 
 
 def build(chat: Chat, scenario: Scenario | None, *, draft: str = "",
@@ -50,12 +41,8 @@ def build(chat: Chat, scenario: Scenario | None, *, draft: str = "",
     if draft:
         messages.append({"role": str(Role.USER), "content": draft})
 
-    system = "\n\n".join(system_parts).strip()
-    if not system:
-        return messages
-    if supports_system_role:
-        return [{"role": "system", "content": system}, *messages]
-    return _prepend_to_first_user(messages, system)
+    return prompting.with_system(messages, "\n\n".join(system_parts),
+                                 supports_system_role)
 
 
 def opening_message(scenario: Scenario | None) -> Message | None:
