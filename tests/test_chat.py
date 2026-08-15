@@ -2,6 +2,7 @@
 
 import pytest
 
+from thaumaturgy import prompting
 from thaumaturgy.chat import Chat, Message, Role, Scenario, models, prompt, reply
 
 SCENARIO = Scenario(name="Grondar", context="You are Grondar.",
@@ -112,6 +113,11 @@ def test_prompt_assembly_without_a_system_role_or_a_scenario():
     plain = Chat(id="c4")
     plain.append(Message(role=Role.USER, text="hi"))
     assert prompt.build(plain, None)[0]["role"] == "user"
+
+
+def test_the_system_prompt_becomes_a_turn_of_its_own_with_nothing_to_merge_into():
+    assert prompting.with_system([], "S", supports_system_role=False) == \
+        [{"role": "user", "content": "S"}]
 
 
 def test_a_failed_empty_reply_is_left_out_of_the_history():

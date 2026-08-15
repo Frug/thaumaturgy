@@ -499,9 +499,8 @@ def scenarios_dir():
 def _as_variables(value) -> dict:
     """A scenario's {{name}} -> value pairs, as strings on both sides.
 
-    These files are hand-editable, so a number or a date written unquoted comes
-    back as one; it stands for text in the scenario either way. A name with
-    nothing to put in the braces is dropped.
+    A number or date written unquoted in the YAML comes back as one, and stands
+    for text in the scenario either way.
     """
     out = {}
     for name, val in _as_mapping(value).items():
@@ -556,7 +555,7 @@ def save_scenario(scenario: dict) -> None:
         "opening_text": scenario.get("opening_text", ""),
     }
     variables = _as_variables(scenario.get("variables"))
-    if variables:  # left out entirely rather than written as an empty mapping
+    if variables:
         data["variables"] = variables
     (scenarios_dir() / f"{new_slug}.yaml").write_text(
         yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
