@@ -709,31 +709,37 @@ def render():
                 send_button = ui.button(icon="send", on_click=send) \
                     .props("color=primary unelevated").classes("h-14 w-14")
 
-        with ui.column().classes("h-full w-56 shrink-0 gap-2 p-3 tg-list-shell"):
+        with ui.column().classes("h-full w-60 shrink-0 gap-2 p-3 tg-list-shell"):
             ui.label("CONTEXT").classes("text-xs text-muted tracking-wide")
             context_counter = ui.badge("Context --") \
                 .props("outline color=secondary") \
                 .classes("min-h-8 w-full justify-center px-2 py-1 font-mono "
                          "text-[11px] whitespace-normal text-center leading-tight")
-            recap_button = ui.button("View recap", icon="compress",
+            context_detail = ui.label().classes(
+                "font-mono text-[11px] leading-tight whitespace-pre-wrap text-muted")
+            model_row = ui.column().classes("w-full gap-0")
+            with model_row:
+                ui.label("MODEL").classes("text-xs text-muted tracking-wide")
+                model_label = ui.label().classes(
+                    "w-full font-mono text-[11px] leading-tight truncate text-muted")
+                with model_label:
+                    model_tooltip = ui.tooltip("")
+            model_row.set_visibility(False)
+            recap_button = ui.button("View recap", icon="search",
                                      on_click=lambda: show_recap()) \
                 .props("flat dense color=secondary").classes("w-full text-xs")
             recap_button.set_visibility(False)
-            with ui.expansion("Details", icon="expand_more") \
-                    .props("dense").classes("w-full text-xs text-muted"):
-                context_detail = ui.label().classes(
-                    "font-mono text-[11px] leading-tight whitespace-pre-wrap text-muted")
-                fold_button = ui.button("Jump to fold", icon="vertical_align_top",
-                                        on_click=lambda: jump_to_fold()) \
-                    .props("flat dense color=secondary").classes("w-full text-xs mt-2")
-                fold_button.set_visibility(False)
-                compact_now_button = ui.button(
-                    "Compact now", icon="compress",
-                    on_click=lambda: ask_manual_compaction()) \
-                    .props("flat dense color=secondary").classes("w-full text-xs")
+            fold_button = ui.button("Jump to fold", icon="vertical_align_top",
+                                    on_click=lambda: jump_to_fold()) \
+                .props("flat dense color=secondary").classes("w-full text-xs")
+            fold_button.set_visibility(False)
+            compact_now_button = ui.button(
+                "Compact now", icon="compress",
+                on_click=lambda: ask_manual_compaction()) \
+                .props("flat dense color=secondary").classes("w-full text-xs")
 
     context_state = {"signature": None, "busy": False}
-    placeholder_state = {"text": None}
+    shown_state = {"text": None, "model": None}
 
     def sync_model_state():
         """Follow the model coming and going, which can happen on another page."""
@@ -741,9 +747,16 @@ def render():
         # Writing a recap is a generation like any other.
         compact_now_button.set_enabled(running)
         text = en.CHAT_PLACEHOLDER if running else en.CHAT_PLACEHOLDER_NO_MODEL
-        if text != placeholder_state["text"]:
-            placeholder_state["text"] = text
+        if text != shown_state["text"]:
+            shown_state["text"] = text
             input_box.props(f'placeholder="{text}"')
+        model_name = engine.server.model if running else None
+        if model_name != shown_state["model"]:
+            shown_state["model"] = model_name
+            # Truncation is the CSS class on the label; the tooltip has it whole.
+            model_label.text = model_name or ""
+            model_tooltip.text = model_name or ""
+            model_row.set_visibility(bool(model_name))
 
     async def refresh_context_counter():
         if input_box.is_deleted or context_counter.is_deleted:
