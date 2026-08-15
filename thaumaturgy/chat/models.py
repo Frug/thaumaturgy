@@ -201,18 +201,16 @@ class Chat:
         return out
 
 
-# A {{name}} to stand a variable's value in for, spaces inside the braces
-# allowed. Nothing but the name between them, so an unclosed brace or a literal
-# { in the text can't swallow the rest of a paragraph.
+# Nothing but the name between the braces, so an unclosed one can't swallow the
+# rest of a paragraph.
 VARIABLE_RE = re.compile(r"\{\{\s*([^{}]*?)\s*\}\}")
 
 
 def fill(text: str, variables: dict[str, str]) -> str:
-    """Replace each {{name}} in `text` with its value, in one pass.
+    """Replace each {{name}} in `text` with its value, in a single pass.
 
-    A name with no variable behind it is left as written: a half-finished
-    scenario should read as one rather than quietly losing the placeholder.
-    Values are substituted as they are, so a {{name}} inside a value stays put.
+    An unset name is left as written, so a half-finished scenario reads as one
+    rather than quietly losing the placeholder.
     """
     if not text or not variables:
         return text
@@ -241,9 +239,8 @@ class Scenario:
     def filled(self) -> "Scenario":
         """This scenario with its variables substituted into the text.
 
-        Applied where the scenario is handed out for use, so the prompt, the
-        opening message, and the info panel all show what the model is told.
-        The editor keeps the placeholders by working from the stored dicts.
+        Applied wherever the scenario is handed out for use, so the prompt, the
+        opening message, and the info panel agree on what the model is told.
         """
         return replace(self, context=fill(self.context, self.variables),
                        opening_text=fill(self.opening_text, self.variables))

@@ -15,7 +15,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from thaumaturgy import appstate, engine, store
+from thaumaturgy import appstate, engine, prompting, store
 from thaumaturgy.chat import prompt, reply
 from thaumaturgy.chat.models import Chat, Message, Role, Scenario, Summary, fingerprint
 
@@ -27,10 +27,8 @@ TRIGGER_RATIO = 0.85
 # compact rarely and deeply rather than trimming a turn per message.
 TARGET_RATIO = 0.5
 RECAP_TOKENS_DEFAULT = 4000  # when the preset predates the setting
-# No model reports how long a summary it will write, so the budget is a guess
-# the user tunes. Capped as a share of the window because the recap is sent
-# with every later turn: past this it starts crowding out the recent messages
-# it was meant to make room for.
+# The recap is resent with every later turn, so past this share of the window
+# it crowds out the recent messages it was meant to make room for.
 MAX_RECAP_SHARE = 0.15
 MIN_RECAP_TOKENS = 256
 MIN_KEEP = 4                # messages left verbatim, however big they are
@@ -364,11 +362,8 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
             "recap": carried,
             "transcript": transcript,
         })
-        if supports_system_role:
-            messages = [{"role": "system", "content": system},
-                        {"role": "user", "content": ask}]
-        else:
-            messages = [{"role": "user", "content": f"{system}\n\n{ask}".strip()}]
+        messages = prompting.with_system([{"role": "user", "content": ask}],
+                                         system, supports_system_role)
         part = _generate(messages, share).strip()
         if part:
             parts.append(f"## Turns {first_turn}-{last_turn}\n\n{part}"
