@@ -150,16 +150,6 @@ def _runtime_gpu_label(vals: dict, model_name: str | None = None) -> str:
     return f"{gpu} layers" + (f" of {blocks}" if blocks else "")
 
 
-def _runtime_status_label(selected: str | None) -> str:
-    """Load state, naming the loaded model when it isn't the selected one."""
-    if not engine.server.running:
-        return "Not loaded"
-    loaded = engine.server.model
-    if loaded and selected and loaded != selected:
-        return f"Loaded ({loaded})"
-    return "Loaded"
-
-
 def _runtime_context_label(vals: dict) -> str:
     ctx = int(vals.get("context_size", 0))
     return "auto" if ctx == 0 else f"{ctx:,} tokens"
@@ -954,15 +944,17 @@ def render():
             if state["mode"] == "view":
                 runtime = active_runtime()
                 params = param_values(state["active"])
-                with ui.row().classes("w-full items-center justify-between"):
+                model_name = current_model()
+                loaded = engine.server.running
+                with ui.row().classes("w-full items-center justify-between no-wrap"):
                     ui.label("Selected Settings").classes("text-lg font-semibold")
-                    ui.badge("ready").props("color=secondary").classes("font-mono")
+                    ui.badge("Loaded" if loaded else "Not loaded") \
+                        .props(f"color={'positive' if loaded else 'grey-7'}") \
+                        .classes("font-mono")
 
                 with ui.column().classes("w-full gap-2"):
                     ui.label("Model").classes("text-xs text-muted uppercase tracking-wide")
-                    model_name = current_model()
                     summary_row("Model", model_name or "None selected")
-                    summary_row("Runtime status", _runtime_status_label(model_name))
                     # From metadata, not the server: /props n_ctx is the window
                     # llama-server was launched with, not the model's limit.
                     detected = engine.trained_ctx(model_name) if model_name else None
