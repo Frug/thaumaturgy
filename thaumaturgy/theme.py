@@ -70,6 +70,21 @@ _HEAD_HTML = """
   .tg-nav-item:hover { background: rgba(52, 97, 140, 0.14); }
   .tg-nav-item.tg-active { background: #34618C; color: #fff; }
 
+  /* Markdown headings. NiceGUI's reset starts at 3rem, which dwarfs the prose
+     around it; same Tailwind steps, moved down one. */
+  .nicegui-editor .q-editor__content h1,
+  .nicegui-markdown h1 { font-size: 2.25rem; line-height: 2.5rem; }
+  .nicegui-editor .q-editor__content h2,
+  .nicegui-markdown h2 { font-size: 1.875rem; line-height: 2.25rem; }
+  .nicegui-editor .q-editor__content h3,
+  .nicegui-markdown h3 { font-size: 1.5rem; line-height: 2rem; }
+  .nicegui-editor .q-editor__content h4,
+  .nicegui-markdown h4 { font-size: 1.25rem; line-height: 1.75rem; }
+  .nicegui-editor .q-editor__content h5,
+  .nicegui-markdown h5 { font-size: 1.125rem; line-height: 1.75rem; }
+  .nicegui-editor .q-editor__content h6,
+  .nicegui-markdown h6 { font-size: 1rem; line-height: 1.5rem; }
+
   /* Quoted dialogue in chat messages */
   .tg-quote { font-weight: 700; }
 
