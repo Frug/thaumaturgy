@@ -14,6 +14,12 @@ CHAT_PLACEHOLDER_NO_MODEL = "Load model from the Model screen to start."
 # meter says what to do instead of quoting a percentage of a guess.
 CONTEXT_NO_MODEL = "Load a model to measure context"
 
+# Removing a message from the transcript.
+DELETE_MESSAGE_ASK = "Delete this message from {who}? This can't be undone."
+DELETE_RETIRES_RECAP = ("The recap stands in for this message, so deleting it "
+                        "retires the recap; the next reply offers to write a "
+                        "fresh one.")
+
 # Compaction: asking to condense a chat, and explaining what that does.
 COMPACT_ASK = ("This chat has outgrown the context window ({used:,} of "
                "{total:,} tokens). Summarize the earliest {folded} messages to "

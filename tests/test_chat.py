@@ -3,7 +3,8 @@
 import pytest
 
 from thaumaturgy import prompting
-from thaumaturgy.chat import Chat, Message, Role, Scenario, models, prompt, reply
+from thaumaturgy.chat import Chat, Message, Role, Scenario, Step, models, prompt, reply
+from thaumaturgy.chat.service import ChatService
 
 SCENARIO = Scenario(name="Grondar", context="You are Grondar.",
                     opening_text="The tavern door swings open.")
@@ -15,6 +16,13 @@ def conversation() -> Chat:
     c.append(Message(role=Role.USER, name="You", text="Hello."))
     c.append(Message(role=Role.ASSISTANT, name="Grondar", text="Well met."))
     return c
+
+
+def service(c: Chat | None = None) -> ChatService:
+    """A service holding one chat, with nothing generating."""
+    s = ChatService()
+    s.chat = conversation() if c is None else c
+    return s
 
 
 # Templates llama.cpp can't parse leave these markers in the text instead of
@@ -95,6 +103,52 @@ def test_finding_the_reply_that_can_be_redone():
     opening_only = Chat(id="c2")
     opening_only.append(Message(role=Role.ASSISTANT, text="An opening."))
     assert opening_only.latest_assistant_index() is None
+
+
+def test_either_side_of_the_conversation_can_be_edited():
+    s = service()
+    assert s.edit_message(1, "Hello again.").step is Step.UPDATED
+    assert s.chat.messages[1].text == "Hello again."
+    s.chat.messages[2].finish_reason = "length"
+    assert s.edit_message(2, "Well met, friend.").step is Step.UPDATED
+    # A reply written by hand is no longer the run that was cut short.
+    assert s.chat.messages[2].warning() is None
+
+
+def test_an_edit_that_would_leave_nothing_behind_is_refused():
+    s = service()
+    assert s.edit_message(1, "   ").step is Step.BLOCKED
+    assert s.chat.messages[1].text == "Hello."
+    assert s.edit_message(9, "off the end").step is Step.ERROR
+
+
+def test_deleting_a_message_leaves_the_rest_in_order():
+    s = service()
+    assert s.delete_message(1).step is Step.UPDATED
+    assert [m.text for m in s.chat.messages] == ["The door swings.", "Well met."]
+    assert s.delete_message(5).step is Step.ERROR
+
+
+def test_a_recap_is_retired_by_a_deletion_it_covers():
+    s = service()
+    covered = s.chat.messages[:2]
+    s.chat.summaries.append(models.Summary(
+        text="Much happened.", covers=2,
+        fingerprint=models.fingerprint(covered)))
+    assert s.chat.active_summary() is not None
+    # The last message sits outside the recap, so it still stands.
+    s.delete_message(2)
+    assert s.chat.active_summary() is not None
+    s.delete_message(0)
+    assert s.chat.active_summary() is None
+
+
+def test_nothing_is_touched_while_a_reply_is_running():
+    s = service()
+    s._compacting.add(s.chat.id)  # stands in for a run on this chat
+    assert s.edit_message(1, "changed").step is Step.BLOCKED
+    assert s.delete_message(1).step is Step.BLOCKED
+    assert s.chat.messages[1].text == "Hello."
 
 
 def test_prompt_assembly():
