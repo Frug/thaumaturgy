@@ -20,6 +20,10 @@ from thaumaturgy.ui.outcomes import notify, toast
 _STREAM_MIN_INTERVAL = 0.2
 _STREAM_MAX_INTERVAL = 0.4
 
+# Stands in for a reply that finished with nothing in it, so the bubble isn't
+# just blank.
+_NO_OUTPUT = "_(no output)_"
+
 
 def _rel_time(ts: float | None) -> str:
     if not ts:
@@ -164,7 +168,8 @@ class _MessageView:
         self.reasoning_box.set_visibility(bool(reasoning.strip()))
 
 
-def _message(m: Message, on_scenario_click=None, on_edit=None) -> _MessageView:
+def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
+             streaming: bool = False) -> _MessageView:
     """Render one message row; returns handles to it (for live updates)."""
     clickable = (not m.is_user) and on_scenario_click is not None
     with ui.row().classes("w-full gap-3 no-wrap items-start pb-4 tg-msg") as row:
@@ -182,6 +187,8 @@ def _message(m: Message, on_scenario_click=None, on_edit=None) -> _MessageView:
             bubble.style("background: rgba(52,97,140,0.10)")
         with bubble:
             text, reasoning = m.display()
+            if not text.strip() and not m.is_user and not streaming:
+                text = _NO_OUTPUT  # a reply still arriving is meant to be empty
             md = ui.markdown(_message_md(text)).classes(
                 "text-sm leading-relaxed break-words")
             box = reasoning_md = None
@@ -195,10 +202,14 @@ def _message(m: Message, on_scenario_click=None, on_edit=None) -> _MessageView:
             if warning:
                 ui.badge(warning).props("color=warning text-color=dark") \
                     .classes("self-start text-xs mt-1")
-            if on_edit is not None:
-                with ui.row().classes("w-full justify-end tg-msg-actions"):
-                    ui.button("Edit", icon="edit", on_click=on_edit) \
-                        .props("flat dense color=secondary").classes("text-xs")
+            if on_edit is not None or on_delete is not None:
+                with ui.row().classes("w-full justify-end gap-1 tg-msg-actions"):
+                    if on_edit is not None:
+                        ui.button("Edit", icon="edit", on_click=on_edit) \
+                            .props("flat dense color=secondary").classes("text-xs")
+                    if on_delete is not None:
+                        ui.button("Delete", icon="delete", on_click=on_delete) \
+                            .props("flat dense color=negative").classes("text-xs")
     return _MessageView(md, box, reasoning_md, row)
 
 
@@ -213,8 +224,8 @@ def render():
         chat.scenario_name = remembered if remembered in names \
             else (names[0] if names else None)
         appstate.state.current_scenario = chat.scenario_name
-    page: dict = {"inner": None, "stream_view": None, "observed": None,
-                  "fold_anchor": None, "refresh_context": lambda: None}
+    page: dict = {"stream_view": None, "observed": None, "fold_anchor": None,
+                  "refresh_context": lambda: None}
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
@@ -263,12 +274,9 @@ def render():
             ui.element("div").classes("w-16 shrink-0")
             ui.button("Regenerate", icon="refresh", on_click=regenerate_last) \
                 .props("flat dense color=secondary").classes("text-xs")
-            ui.button("Edit", icon="edit", on_click=edit_last_response) \
-                .props("flat dense color=secondary").classes("text-xs")
 
     def render_messages():
         msgs_col.clear()
-        page["inner"] = None
         page["stream_view"] = None
         page["fold_anchor"] = None
         with msgs_col:
@@ -277,9 +285,7 @@ def render():
                     ui.icon("forum").classes("text-5xl text-muted")
                     ui.label("Start a new chat.").classes("text-muted")
                 return
-            inner = ui.column().classes("w-full max-w-3xl mx-auto gap-2")
-            page["inner"] = inner
-            with inner:
+            with ui.column().classes("w-full max-w-3xl mx-auto gap-2"):
                 run_ = chat.run
                 streaming = chat.busy()
                 regenerate_index = (None if streaming
@@ -291,15 +297,20 @@ def render():
                 for i, m in enumerate(chat.chat.messages):
                     if i == divider_at:
                         page["fold_anchor"] = _compaction_divider(summary)
-                    on_edit = (None if streaming or not m.is_user
-                               else lambda idx=i: edit_user_message(idx))
-                    view = _message(m, on_scenario_click=open_scenario,
-                                    on_edit=on_edit)
+                    live = streaming and run_ is not None and i == run_.index
+                    # Nothing is editable mid-reply: the service refuses, and
+                    # the indexes would shift under the run in flight.
+                    view = _message(
+                        m, on_scenario_click=open_scenario, streaming=live,
+                        on_edit=None if streaming else (
+                            lambda idx=i: ask_edit_message(idx)),
+                        on_delete=None if streaming else (
+                            lambda idx=i: ask_delete_message(idx)))
                     # With the divider hidden the first unfolded message is the
                     # boundary, so the jump works either way.
                     if i == fold_at and page["fold_anchor"] is None:
                         page["fold_anchor"] = view.row
-                    if streaming and run_ is not None and i == run_.index:
+                    if live:
                         page["stream_view"] = view
                     if i == regenerate_index:
                         render_reply_actions()
@@ -348,16 +359,10 @@ def render():
             if not still_showing(run_):
                 return
             outcome = chat.complete_run(run_)
-            message = run_.message
-            view = page["stream_view"]
-            if view is not None and not view.is_deleted:
-                text, reasoning = message.display()
-                view.update(text or "_(no output)_", reasoning)
-            if message.warning():
-                render_messages()  # re-render to hang the warning badge off the bubble
-            elif chat.chat.latest_assistant_index() == run_.index:
-                with page["inner"]:
-                    render_reply_actions()
+            # Re-render rather than patch the bubble that was streaming: the
+            # finished reply gets its final text, its actions, and any warning
+            # badge in one pass, all of which its slot is closed to by now.
+            render_messages()
             scroll_bottom()
             chat_list.refresh()
             if outcome.step is Step.ERROR:
@@ -395,6 +400,7 @@ def render():
     pending_delete = {"chat_id": None}
     pending_rename = {"chat_id": None}
     pending_edit = {"chat_id": None, "index": None}
+    pending_message_delete = {"chat_id": None, "index": None}
     pending_compaction = {"draft": "", "active": False, "force": False, "redo": False}
 
     with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3") \
@@ -404,6 +410,22 @@ def render():
             ui.button("Cancel", on_click=delete_dialog.close).props("flat")
             ui.button("Delete", icon="delete",
                       on_click=lambda: (delete_dialog.close(), delete_pending_chat())) \
+                .props("color=negative unelevated")
+
+    with ui.dialog() as message_delete_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:420px;max-width:92vw"):
+        message_delete_label = ui.label().classes("text-sm leading-relaxed")
+        message_delete_quote = ui.label().classes(
+            "text-xs text-muted italic leading-snug break-words")
+        # Shown only when the recap stands for the message being dropped, since
+        # dropping it is an edit as far as the recap's fingerprint is concerned.
+        message_delete_note = ui.label(en.DELETE_RETIRES_RECAP).classes(
+            "text-xs text-muted leading-snug")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=message_delete_dialog.close).props("flat")
+            ui.button("Delete", icon="delete",
+                      on_click=lambda: (message_delete_dialog.close(),
+                                        delete_pending_message())) \
                 .props("color=negative unelevated")
 
     with ui.dialog() as rename_dialog, ui.card().classes("p-5 gap-3") \
@@ -487,39 +509,34 @@ def render():
         pending_rename["chat_id"] = None
         apply(outcome)
 
-    def edit_last_response():
-        message = chat.editable_reply()
-        if message is None or chat.busy():
-            notify(chat.edit_last(""))  # reuses the service's own guard messages
-            return
-        pending_edit["chat_id"] = chat.chat.id
-        pending_edit["index"] = None  # None = the latest reply
-        edit_title.text = "Edit Response"
-        edit_box.value = message.text
-        edit_dialog.open()
+    def message_at(index: int) -> Message | None:
+        messages = chat.chat.messages if chat.chat else []
+        return messages[index] if 0 <= index < len(messages) else None
 
-    def edit_user_message(index: int):
-        if chat.chat is None:
+    def ask_edit_message(index: int):
+        message = message_at(index)
+        if message is None:
             return
         if chat.busy():
             notify(chat.edit_message(index, ""))  # reuses the service's own guard
             return
         pending_edit["chat_id"] = chat.chat.id
         pending_edit["index"] = index
-        edit_title.text = "Edit Message"
-        edit_box.value = chat.chat.messages[index].text
+        edit_title.text = "Edit message" if message.is_user else "Edit response"
+        # The raw text, markers and all: what is saved is what the model wrote,
+        # not the rendered split into reply and reasoning.
+        edit_box.value = message.text
         edit_dialog.open()
 
     def save_edit():
-        if pending_edit["chat_id"] != (chat.chat.id if chat.chat else None):
+        index = pending_edit["index"]
+        message = message_at(index) if index is not None else None
+        if message is None or pending_edit["chat_id"] != chat.chat.id:
             edit_dialog.close()
             return
-        index = pending_edit["index"]
-        if index is None:
-            outcome = chat.edit_last(edit_box.value or "")
-        else:
-            outcome = chat.edit_message(
-                index, _normalize_user_markdown(edit_box.value or ""))
+        text = edit_box.value or ""
+        outcome = chat.edit_message(
+            index, _normalize_user_markdown(text) if message.is_user else text)
         if outcome.step is Step.BLOCKED:
             notify(outcome)
             return
@@ -527,6 +544,32 @@ def render():
         pending_edit["chat_id"] = None
         pending_edit["index"] = None
         apply(outcome)
+
+    def ask_delete_message(index: int):
+        message = message_at(index)
+        if message is None:
+            return
+        if chat.busy():
+            notify(chat.delete_message(index))  # reuses the service's own guard
+            return
+        pending_message_delete["chat_id"] = chat.chat.id
+        pending_message_delete["index"] = index
+        message_delete_label.text = en.DELETE_MESSAGE_ASK.format(
+            who=message.name or ("you" if message.is_user else "the model"))
+        message_delete_quote.text = _truncate(
+            " ".join(message.display()[0].split()) or "(empty)", 120)
+        summary = chat.chat.active_summary()
+        message_delete_note.set_visibility(
+            summary is not None and index < summary.covers)
+        message_delete_dialog.open()
+
+    def delete_pending_message():
+        index = pending_message_delete["index"]
+        if index is not None and pending_message_delete["chat_id"] == \
+                (chat.chat.id if chat.chat else None):
+            apply(chat.delete_message(index))
+        pending_message_delete["chat_id"] = None
+        pending_message_delete["index"] = None
 
     def new_chat():
         apply(chat.new_chat())

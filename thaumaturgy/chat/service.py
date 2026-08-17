@@ -227,46 +227,45 @@ class ChatService:
             return Outcome(Step.ERROR, f"Generation error: {run.error}")
         return Outcome(Step.UPDATED)
 
-    # ── editing an existing reply ────────────────────────────────────────────
-    def edit_last(self, text: str) -> Outcome:
-        if self.chat is None:
-            return Outcome(Step.IDLE)
-        if self.busy(self.chat.id):
-            return Outcome(Step.BLOCKED, en.CHAT_BUSY)
-        index = self.chat.latest_assistant_index()
-        if index is None:
-            return Outcome(Step.BLOCKED,
-                           "Only the latest assistant reply can be edited.")
-        if not text.strip():
-            return Outcome(Step.BLOCKED, "Response text can't be empty.")
-        message = self.chat.messages[index]
-        message.text = text
-        message.clear_generation_state()
-        self._save()
-        return Outcome(Step.UPDATED)
-
-    def edit_message(self, index: int, text: str) -> Outcome:
-        """Rewrite one of the user's own messages, wherever it sits."""
+    # ── editing and deleting messages ────────────────────────────────────────
+    def _reachable(self, index: int) -> Outcome | None:
+        """Why the message at `index` can't be changed right now, if it can't."""
         if self.chat is None:
             return Outcome(Step.IDLE)
         if self.busy(self.chat.id):
             return Outcome(Step.BLOCKED, en.CHAT_BUSY)
         if not 0 <= index < len(self.chat.messages):
             return Outcome(Step.ERROR, "That message is no longer there.")
-        message = self.chat.messages[index]
-        if message.role is not Role.USER:
-            return Outcome(Step.BLOCKED, "Only your own messages can be edited here.")
+        return None
+
+    def edit_message(self, index: int, text: str) -> Outcome:
+        """Rewrite any message in the chat, whoever said it."""
+        blocked = self._reachable(index)
+        if blocked is not None:
+            return blocked
         if not text.strip():
             return Outcome(Step.BLOCKED, "Message text can't be empty.")
+        message = self.chat.messages[index]
         message.text = text
+        if message.role is Role.ASSISTANT:
+            # The text is no longer what came out of the model, so how that run
+            # ended no longer describes it.
+            message.clear_generation_state()
         self._save()
         return Outcome(Step.UPDATED)
 
-    def editable_reply(self) -> Message | None:
-        if self.chat is None:
-            return None
-        index = self.chat.latest_assistant_index()
-        return self.chat.messages[index] if index is not None else None
+    def delete_message(self, index: int) -> Outcome:
+        """Drop one message from the transcript.
+
+        A recap covering it is retired by the edit it amounts to: the messages
+        behind its fingerprint no longer hash to it.
+        """
+        blocked = self._reachable(index)
+        if blocked is not None:
+            return blocked
+        self.chat.messages.pop(index)
+        self._save()
+        return Outcome(Step.UPDATED)
 
     # ── compaction ───────────────────────────────────────────────────────────
     def plan_compaction(self, draft: str = "", force: bool = False) \

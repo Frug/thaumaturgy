@@ -65,8 +65,8 @@ A chat that outgrows the model's context window stops and offers to compact
 itself: its oldest turns are summarized into a recap, and the model is sent that
 recap in their place. Nothing is removed from the chat — the transcript stays
 whole in `chats/*.json` and in the UI, alongside a `summaries` entry recording
-which messages the recap stands for. Editing a message the recap covers retires
-it, and the next reply offers to write a fresh one.
+which messages the recap stands for. Editing or deleting a message the recap
+covers retires it, and the next reply offers to write a fresh one.
 
 How long a recap may run is **Recap budget** in the parameter set on the Model
 page (default 4000 tokens, capped at 15% of the context window so the recap
