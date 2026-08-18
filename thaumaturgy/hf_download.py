@@ -184,10 +184,18 @@ def fetch_variant(repo_id: str, files: list[str], on_progress=lambda _m: None) -
     """Download one already-GGUF variant; returns the filename to load."""
     from huggingface_hub import hf_hub_download
 
+    # Downloaded into the data dir rather than through the shared HF cache,
+    # which keeps its own copy of every file it fetches: a model pulled that way
+    # costs twice its size on disk for as long as the cache is left alone.
+    work = sub_dir("cache") / "download"
     for i, rel in enumerate(files, 1):
         on_progress(f"Downloading {i}/{len(files)}: {os.path.basename(rel)}…")
-        local = hf_hub_download(repo_id, rel)
-        shutil.copyfile(local, models_dir() / os.path.basename(rel))
+        local = hf_hub_download(repo_id, rel, local_dir=str(work))
+        # Same filesystem as the staging dir, so the model is moved, not copied.
+        os.replace(local, models_dir() / os.path.basename(rel))
+    # Only once every shard has landed: what is left behind is what a failed
+    # download resumes from, and it is this directory the next attempt reuses.
+    shutil.rmtree(work, ignore_errors=True)
     # A split model is loaded through its first shard; llama.cpp finds the rest.
     return os.path.basename(files[0])
 
