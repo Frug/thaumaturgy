@@ -189,15 +189,16 @@ def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
             text, reasoning = m.display()
             if not text.strip() and not m.is_user and not streaming:
                 text = _NO_OUTPUT  # a reply still arriving is meant to be empty
-            md = ui.markdown(_message_md(text)).classes(
-                "text-sm leading-relaxed break-words")
             box = reasoning_md = None
             if not m.is_user:
+                # Above the reply, in the order it was thought and written.
                 box = ui.expansion("Thinking", icon="psychology").classes("w-full")
                 with box:
                     reasoning_md = ui.markdown(_message_md(reasoning)).classes(
                         "text-xs leading-relaxed break-words text-muted")
                 box.set_visibility(bool(reasoning))
+            md = ui.markdown(_message_md(text)).classes(
+                "text-sm leading-relaxed break-words")
             warning = m.warning()
             if warning:
                 ui.badge(warning).props("color=warning text-color=dark") \
@@ -208,7 +209,7 @@ def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
                         ui.button("Edit", icon="edit", on_click=on_edit) \
                             .props("flat dense color=secondary").classes("text-xs")
                     if on_delete is not None:
-                        ui.button("Delete", icon="delete", on_click=on_delete) \
+                        ui.button(icon="delete", on_click=on_delete) \
                             .props("flat dense color=negative").classes("text-xs")
     return _MessageView(md, box, reasoning_md, row)
 
@@ -224,8 +225,8 @@ def render():
         chat.scenario_name = remembered if remembered in names \
             else (names[0] if names else None)
         appstate.state.current_scenario = chat.scenario_name
-    page: dict = {"stream_view": None, "observed": None, "fold_anchor": None,
-                  "refresh_context": lambda: None}
+    page: dict = {"inner": None, "stream_view": None, "observed": None,
+                  "fold_anchor": None, "refresh_context": lambda: None}
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
@@ -277,6 +278,7 @@ def render():
 
     def render_messages():
         msgs_col.clear()
+        page["inner"] = None
         page["stream_view"] = None
         page["fold_anchor"] = None
         with msgs_col:
@@ -285,7 +287,9 @@ def render():
                     ui.icon("forum").classes("text-5xl text-muted")
                     ui.label("Start a new chat.").classes("text-muted")
                 return
-            with ui.column().classes("w-full max-w-3xl mx-auto gap-2"):
+            inner = ui.column().classes("w-full max-w-3xl mx-auto gap-2")
+            page["inner"] = inner
+            with inner:
                 run_ = chat.run
                 streaming = chat.busy()
                 regenerate_index = (None if streaming
@@ -298,14 +302,13 @@ def render():
                     if i == divider_at:
                         page["fold_anchor"] = _compaction_divider(summary)
                     live = streaming and run_ is not None and i == run_.index
-                    # Nothing is editable mid-reply: the service refuses, and
-                    # the indexes would shift under the run in flight.
+                    # Built even mid-reply, when the service refuses them: the
+                    # bubble's slot is closed by the time the reply lands, so a
+                    # row added afterwards would cost a whole re-render.
                     view = _message(
                         m, on_scenario_click=open_scenario, streaming=live,
-                        on_edit=None if streaming else (
-                            lambda idx=i: ask_edit_message(idx)),
-                        on_delete=None if streaming else (
-                            lambda idx=i: ask_delete_message(idx)))
+                        on_edit=lambda idx=i: ask_edit_message(idx),
+                        on_delete=lambda idx=i: ask_delete_message(idx))
                     # With the divider hidden the first unfolded message is the
                     # boundary, so the jump works either way.
                     if i == fold_at and page["fold_anchor"] is None:
@@ -359,11 +362,20 @@ def render():
             if not still_showing(run_):
                 return
             outcome = chat.complete_run(run_)
-            # Re-render rather than patch the bubble that was streaming: the
-            # finished reply gets its final text, its actions, and any warning
-            # badge in one pass, all of which its slot is closed to by now.
-            render_messages()
-            scroll_bottom()
+            message = run_.message
+            view = page["stream_view"]
+            if view is not None and not view.is_deleted:
+                text, reasoning = message.display()
+                view.update(text or _NO_OUTPUT, reasoning)
+            if message.warning():
+                render_messages()  # re-render to hang the warning badge off the bubble
+            elif chat.chat.latest_assistant_index() == run_.index:
+                with page["inner"]:
+                    render_reply_actions()
+            # Waits, where the scrolls during the stream don't: the text of this
+            # last frame reaches the browser just after the command to scroll
+            # past it, and there is no next frame to make up the difference.
+            await scroll_bottom_after_render()
             chat_list.refresh()
             if outcome.step is Step.ERROR:
                 # Runs as a bare task, which has no slot stack of its own;
