@@ -20,6 +20,12 @@ DELETE_RETIRES_RECAP = ("The recap stands in for this message, so deleting it "
                         "retires the recap; the next reply offers to write a "
                         "fresh one.")
 
+# Scenarios page.
+DELETE_SCENARIO_ASK = "Delete scenario \u201c{name}\u201d? This can't be undone."
+DELETE_SCENARIO_CHATS = ("Its {chats} saved chat{plural} stay on disk but no "
+                         "longer appear in the app, since they are filed under "
+                         "this scenario.")
+
 # Compaction: asking to condense a chat, and explaining what that does.
 COMPACT_ASK = ("This chat has outgrown the context window ({used:,} of "
                "{total:,} tokens). Summarize the earliest {folded} messages to "
