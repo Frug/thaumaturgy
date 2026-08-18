@@ -189,15 +189,16 @@ def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
             text, reasoning = m.display()
             if not text.strip() and not m.is_user and not streaming:
                 text = _NO_OUTPUT  # a reply still arriving is meant to be empty
-            md = ui.markdown(_message_md(text)).classes(
-                "text-sm leading-relaxed break-words")
             box = reasoning_md = None
             if not m.is_user:
+                # Above the reply, in the order it was thought and written.
                 box = ui.expansion("Thinking", icon="psychology").classes("w-full")
                 with box:
                     reasoning_md = ui.markdown(_message_md(reasoning)).classes(
                         "text-xs leading-relaxed break-words text-muted")
                 box.set_visibility(bool(reasoning))
+            md = ui.markdown(_message_md(text)).classes(
+                "text-sm leading-relaxed break-words")
             warning = m.warning()
             if warning:
                 ui.badge(warning).props("color=warning text-color=dark") \
@@ -208,7 +209,7 @@ def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
                         ui.button("Edit", icon="edit", on_click=on_edit) \
                             .props("flat dense color=secondary").classes("text-xs")
                     if on_delete is not None:
-                        ui.button("Delete", icon="delete", on_click=on_delete) \
+                        ui.button(icon="delete", on_click=on_delete) \
                             .props("flat dense color=negative").classes("text-xs")
     return _MessageView(md, box, reasoning_md, row)
 
