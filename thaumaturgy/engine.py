@@ -28,6 +28,7 @@ from thaumaturgy import appstate, llama_bins, metadata_gguf, store
 from thaumaturgy.paths import log_dir, sub_dir
 
 SERVER_LOG_LIMIT = 500
+STREAM_RAW_LIMIT = 2000
 
 
 def models_dir():
@@ -173,6 +174,70 @@ def _free_port() -> int:
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+class _StreamTally:
+    """What one chat request's SSE stream carried.
+
+    A blank reply leaves nothing to diagnose from, so this counts the delta
+    fields the tokens went into — stream_chat reads only `content` and
+    `reasoning_content` — and holds the raw events back for one.
+    """
+
+    def __init__(self, max_tokens: int | None, reasoning: str, budget: int,
+                 verbose: bool):
+        self.max_tokens = max_tokens
+        self.reasoning = reasoning
+        self.budget = budget
+        self.verbose = verbose
+        self.keys: dict[str, int] = {}
+        self.content_chars = 0
+        self.reasoning_chars = 0
+        self.finish_reason: str | None = None
+        self.error: str | None = None
+        self.raw: deque[str] = deque(maxlen=STREAM_RAW_LIMIT)
+
+    def event(self, data: str, delta: dict) -> None:
+        self.raw.append(data)
+        for key in delta:
+            self.keys[key] = self.keys.get(key, 0) + 1
+        self.content_chars += len(delta.get("content") or "")
+        self.reasoning_chars += len(delta.get("reasoning_content") or "")
+
+    @property
+    def empty(self) -> bool:
+        return not self.content_chars and not self.reasoning_chars
+
+    def _summary(self) -> str:
+        keys = ", ".join(f"{k}={v}" for k, v in sorted(self.keys.items())) or "none"
+        line = (f"finish={self.finish_reason} max_tokens={self.max_tokens} "
+                f"reasoning={self.reasoning} budget={self.budget} "
+                f"content_chars={self.content_chars} "
+                f"reasoning_chars={self.reasoning_chars} delta_keys[{keys}]")
+        return f"{line} error={self.error}" if self.error else line
+
+    def write(self) -> None:
+        """Append this request's record to the log dir's chat-stream.log.
+
+        Verbose mode records every request; otherwise only a blank or failed
+        one. Raw events go in for a blank reply alone — logging a successful
+        one's would build a transcript, and a request that died on the wire has
+        its exception instead. Never raises.
+        """
+        directory = log_dir()
+        if directory is None or not (self.verbose or self.empty or self.error):
+            return
+        lines = [f"stream: {self._summary()}"]
+        if self.empty and not self.error:
+            lines.append(f"stream: reply was empty; {len(self.raw)} raw event(s) follow")
+            lines += [f"stream|   {event}" for event in self.raw]
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with (directory / "chat-stream.log").open("a", encoding="utf-8") as fh:
+                for line in lines:
+                    fh.write(f"{stamp} {line}\n")
+        except OSError:
+            pass
 
 
 class LlamaServer:
@@ -568,34 +633,48 @@ class LlamaServer:
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         finish_reason = None
-        with requests.post(f"{self.base_url}/v1/chat/completions",
-                           json=body, stream=True, timeout=600) as r:
-            if not r.ok:
-                raise RuntimeError(
-                    f"llama-server returned {r.status_code}: {self._error_message(r)}")
-            for raw_line in r.iter_lines(decode_unicode=False):
-                try:
-                    line = raw_line.decode("utf-8")
-                except UnicodeDecodeError:
-                    line = raw_line.decode("utf-8", errors="replace")
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(data)
-                except ValueError:
-                    continue
-                choice = (obj.get("choices") or [{}])[0]
-                finish_reason = choice.get("finish_reason") or finish_reason
-                delta = choice.get("delta") or {}
-                reasoning = delta.get("reasoning_content")
-                if reasoning:
-                    yield {"type": "reasoning", "text": reasoning}
-                content = delta.get("content")
-                if content:
-                    yield {"type": "delta", "text": content}
+        tally = (_StreamTally(max_tokens, self.reasoning, self.reasoning_budget,
+                              store.verbose_stream_log())
+                 if log_dir() is not None else None)
+        try:
+            with requests.post(f"{self.base_url}/v1/chat/completions",
+                               json=body, stream=True, timeout=600) as r:
+                if not r.ok:
+                    raise RuntimeError(
+                        f"llama-server returned {r.status_code}: {self._error_message(r)}")
+                for raw_line in r.iter_lines(decode_unicode=False):
+                    try:
+                        line = raw_line.decode("utf-8")
+                    except UnicodeDecodeError:
+                        line = raw_line.decode("utf-8", errors="replace")
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except ValueError:
+                        continue
+                    choice = (obj.get("choices") or [{}])[0]
+                    finish_reason = choice.get("finish_reason") or finish_reason
+                    delta = choice.get("delta") or {}
+                    if tally is not None:
+                        tally.event(data, delta)
+                    reasoning = delta.get("reasoning_content")
+                    if reasoning:
+                        yield {"type": "reasoning", "text": reasoning}
+                    content = delta.get("content")
+                    if content:
+                        yield {"type": "delta", "text": content}
+        except Exception as exc:
+            if tally is not None:
+                tally.error = str(exc)
+            raise
+        finally:
+            if tally is not None:
+                tally.finish_reason = finish_reason
+                tally.write()
         if finish_reason:
             yield {"type": "finish", "reason": finish_reason,
                    "limit": self._token_limit()}

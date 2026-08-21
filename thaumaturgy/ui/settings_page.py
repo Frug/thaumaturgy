@@ -100,6 +100,17 @@ def render() -> None:
             ).classes("w-full tg-field").props("filled clearable")
             ui.label(en.LOG_HELP).classes("text-xs text-muted leading-snug")
 
+            def set_stream_stats(value: bool) -> None:
+                store.save_verbose_stream_log(value)
+                ui.notify("Logging every chat request" if value
+                          else "Logging blank replies only", type="positive")
+
+            ui.switch("Log a summary of every chat request",
+                      value=store.verbose_stream_log(),
+                      on_change=lambda e: set_stream_stats(e.value)) \
+                .classes("text-sm")
+            ui.label(en.STREAM_STATS_HELP).classes("text-xs text-muted leading-snug")
+
             status = ui.label().classes("text-sm")
 
             def refresh_status() -> None:
