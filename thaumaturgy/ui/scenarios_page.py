@@ -13,6 +13,7 @@ def render():
     # is blank while it is typed, and two rows can share one until renamed.
     state: dict = {"selected": 0 if scenarios else None, "variables": []}
     guard = {"loading": False}
+    pending_delete = {"index": None}
     fields: dict[str, ui.element] = {}
 
     def current() -> dict | None:
@@ -57,9 +58,25 @@ def render():
         scenarios.append(s)
         select(len(scenarios) - 1)
 
-    def delete_scenario():
+    def ask_delete_scenario():
         i = state["selected"]
         if i is None:
+            return
+        pending_delete["index"] = i
+        name = scenarios[i]["name"] or "(unnamed)"
+        delete_label.text = en.DELETE_SCENARIO_ASK.format(name=name)
+        # The scenario's chats are filed under its name and are only reachable
+        # through it, so say what becomes of them rather than let them vanish.
+        chats = len(store.list_chats(name))
+        delete_note.text = en.DELETE_SCENARIO_CHATS.format(
+            chats=chats, plural="" if chats == 1 else "s")
+        delete_note.set_visibility(bool(chats))
+        delete_dialog.open()
+
+    def delete_pending_scenario():
+        i = pending_delete["index"]
+        pending_delete["index"] = None
+        if i is None or not 0 <= i < len(scenarios):
             return
         store.delete_scenario(scenarios[i])
         del scenarios[i]
@@ -136,12 +153,23 @@ def render():
                     with ui.item_section():
                         ui.label(s["name"] or "(unnamed)").classes("font-medium")
 
+    with ui.dialog() as delete_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:420px;max-width:92vw"):
+        delete_label = ui.label().classes("text-sm leading-relaxed")
+        delete_note = ui.label().classes("text-xs text-muted leading-snug")
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Cancel", on_click=delete_dialog.close).props("flat")
+            ui.button("Delete", icon="delete",
+                      on_click=lambda: (delete_dialog.close(),
+                                        delete_pending_scenario())) \
+                .props("color=negative unelevated")
+
     with ui.row().classes("w-full gap-6 no-wrap").style("height: calc(100vh - 7rem)"):
         with ui.column().classes("h-full w-64 gap-2 no-wrap"):
             with ui.row().classes("w-full gap-2 no-wrap"):
                 ui.button("New", icon="add", on_click=add_scenario) \
                     .props("color=positive unelevated").classes("flex-1")
-                ui.button(icon="delete", on_click=delete_scenario) \
+                ui.button(icon="delete", on_click=ask_delete_scenario) \
                     .props("color=negative unelevated") \
                     .tooltip("Delete selected scenario")
             with ui.scroll_area().classes("flex-1 w-full min-h-0 tg-list-shell"):
