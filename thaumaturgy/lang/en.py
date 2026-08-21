@@ -43,6 +43,42 @@ COMPACT_NOT_NEEDED = "This chat already fits; nothing to do."
 COMPACT_DIVIDER = "Context compacted — {covers} earlier messages summarized"
 NO_RECAP = "This chat hasn't been compacted, so there is no recap yet."
 
+MAX_NEW_TOKENS_HELP = (
+    "A ceiling on how long a reply may run, not a target — most stop well "
+    "short of it. On a thinking model the reasoning budget is added on top "
+    "rather than taken out, so the reply keeps its full allowance. A reply "
+    "that runs into either bound is marked as cut off."
+)
+TEMPERATURE_HELP = (
+    "How evenly the choice is spread across the tokens still in play: under 1 "
+    "sharpens toward the likeliest, over 1 lets unlikely ones through, 0 "
+    "always takes the top token. It runs last, reweighting what top-k, top-p "
+    "and min-p left rather than widening the field."
+)
+TOP_P_HELP = (
+    "Keeps the likeliest tokens whose odds add up to this much and discards "
+    "the rest. Counting probability where top-k counts rank, it stays narrow "
+    "at a step the model is sure of and opens up at one it is torn over. 1.0 "
+    "turns it off."
+)
+TOP_K_HELP = (
+    "Keeps this many of the likeliest tokens, counted by rank, so the same "
+    "number survives a confident step and an uncertain one. That makes it the "
+    "bluntest of the three cutoffs, and the one usually left loose for top-p "
+    "and min-p to work behind. 1 always takes the top token; 0 turns it off."
+)
+MIN_P_HELP = (
+    "Discards tokens whose odds fall below this fraction of the likeliest "
+    "token's. The floor moves with the model's confidence, which makes it the "
+    "most forgiving of the three cutoffs and the one that holds up best with "
+    "top-k off. 0 turns it off."
+)
+REPETITION_PENALTY_HELP = (
+    "Weighs down tokens that appeared in the last 64, so the model repeats "
+    "itself less. It works on tokens rather than phrases, so it also falls on "
+    "names and words prose cannot do without; past roughly 1.15 that shows as "
+    "strained wording and names that drift. 1.0 turns it off."
+)
 RECAP_BUDGET_HELP = (
     "How long a recap may run when a chat is compacted. No model reports how "
     "long a summary it will write, so this is a ceiling to tune rather than a "
@@ -99,3 +135,10 @@ LOG_HELP = (
     "The in-app llama.cpp panel only keeps the last few hundred lines, so a "
     "log directory is what lets you look at a load or a timing after the fact."
 )
+STREAM_STATS_HELP = (
+    "A blank reply is logged either way, raw events and all, since nothing "
+    "else survives it. Turn this on to log a line for every request too — "
+    "token counts and the fields they arrived in — when a bad reply needs "
+    "comparing against good ones. Off is the normal setting."
+)
+
