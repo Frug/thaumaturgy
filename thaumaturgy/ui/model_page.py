@@ -69,12 +69,13 @@ FALLBACK_MAX_GPU_LAYERS = 100
 
 # (key, label, min, max, step, decimals, help)
 PARAMS = [
-    ("max_new_tokens", "Max new tokens", 1, 4096, 1, 0, ""),
-    ("temperature", "Temperature", 0.0, 2.0, 0.01, 2, ""),
-    ("top_p", "Top-p", 0.0, 1.0, 0.01, 2, ""),
-    ("top_k", "Top-k", 0, 200, 1, 0, ""),
-    ("min_p", "Min-p", 0.0, 1.0, 0.01, 2, ""),
-    ("repetition_penalty", "Repetition penalty", 1.0, 1.5, 0.01, 2, ""),
+    ("max_new_tokens", "Max new tokens", 1, 4096, 1, 0, en.MAX_NEW_TOKENS_HELP),
+    ("temperature", "Temperature", 0.0, 2.0, 0.01, 2, en.TEMPERATURE_HELP),
+    ("top_p", "Top-p", 0.0, 1.0, 0.01, 2, en.TOP_P_HELP),
+    ("top_k", "Top-k", 0, 200, 1, 0, en.TOP_K_HELP),
+    ("min_p", "Min-p", 0.0, 1.0, 0.01, 2, en.MIN_P_HELP),
+    ("repetition_penalty", "Repetition penalty", 1.0, 1.5, 0.01, 2,
+     en.REPETITION_PENALTY_HELP),
     ("recap_tokens", "Recap budget", 256, 8192, 64, 0, en.RECAP_BUDGET_HELP),
 ]
 

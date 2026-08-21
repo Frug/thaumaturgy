@@ -311,6 +311,20 @@ def save_log_dir(path: str | None) -> None:
     paths.reset_log_dir()
 
 
+def verbose_stream_log() -> bool:
+    """Whether every chat request gets a chat-stream.log line. Off by default."""
+    return bool(load_app_config().get("verbose_stream_log"))
+
+
+def save_verbose_stream_log(on: bool) -> None:
+    config = load_app_config()
+    if on:
+        config["verbose_stream_log"] = True
+    else:
+        config.pop("verbose_stream_log", None)
+    save_app_config(config)
+
+
 def compaction_divider() -> bool:
     """Whether the chat marks where its recap takes over. On unless turned off."""
     value = load_app_config().get("compaction_divider")
