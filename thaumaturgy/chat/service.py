@@ -8,6 +8,7 @@ One instance for the process, like engine.server.
 
 from dataclasses import replace
 from enum import StrEnum, auto
+from weakref import WeakValueDictionary
 
 from thaumaturgy import appstate, engine, store
 from thaumaturgy.chat import compaction, prompt
@@ -26,16 +27,53 @@ class Step(StrEnum):
     ERROR = auto()
 
 
-class ChatService:
-    """Owns the conversation the page is showing, and any reply in flight."""
+class ChatRuntime:
+    """Process-wide live chats and background work.
+
+    A page owns its selection through ``ChatService``; the runtime owns only
+    objects that must survive navigation and be shared by two tabs looking at
+    the same chat.
+    """
 
     def __init__(self):
+        # Open pages and workers own chats. This index only makes two tabs share
+        # an object while it is live; it must not retain every transcript ever
+        # opened for the lifetime of the process.
+        self.chats: WeakValueDictionary[str, Chat] = WeakValueDictionary()
+        self.runs: dict[str, ChatRun] = {}
+        self.compacting: set[str] = set()
+        self.compaction_steps: dict[str, tuple[int, int]] = {}
+
+    def remember(self, chat: Chat) -> Chat:
+        self.chats[chat.id] = chat
+        return chat
+
+    def forget(self, chat_id: str) -> None:
+        self.chats.pop(chat_id, None)
+
+
+class ChatService:
+    """A page's selected conversation, backed by a shared live runtime."""
+
+    def __init__(self, runtime: ChatRuntime | None = None, *, params: dict | None = None,
+                 model_name: str | None = None):
+        # A private runtime keeps the service convenient in scripts and tests.
+        # The UI explicitly passes ``chat_runtime`` so page instances share
+        # live generations without sharing their current selection.
+        self.runtime = runtime or ChatRuntime()
+        self.params = dict(appstate.state.current_params if params is None else params)
+        self.model_name = model_name or appstate.state.current_model
         self.chat: Chat | None = None
         self.scenario_name: str | None = None
-        self._runs: dict[str, ChatRun] = {}
-        self._compacting: set[str] = set()
-        # (pass, total) of a running compaction, for the page to show.
-        self.compaction_step: tuple[int, int] | None = None
+        # Kept as aliases for the small amount of service-level introspection
+        # used by callers and tests.
+        self._runs = self.runtime.runs
+        self._compacting = self.runtime.compacting
+
+    @property
+    def compaction_step(self) -> tuple[int, int] | None:
+        chat_id = self.chat.id if self.chat else ""
+        return self.runtime.compaction_steps.get(chat_id)
 
     # ── scenarios ────────────────────────────────────────────────────────────
     def scenarios(self) -> list[Scenario]:
@@ -50,7 +88,6 @@ class ChatService:
 
     def select_scenario(self, name: str | None) -> Outcome:
         self.scenario_name = name
-        appstate.state.current_scenario = name
         store.save_last_scenario(name)
         return self.open_first(name)
 
@@ -60,40 +97,35 @@ class ChatService:
 
     def _adopt(self, chat: Chat | None) -> Outcome:
         self.chat = chat
-        appstate.state.current_chat_id = chat.id if chat else None
         return Outcome(Step.UPDATED)
 
     def open(self, chat_id: str | None) -> Outcome:
         """Open a chat, preferring the live copy a running reply writes into."""
         if chat_id is None:
             return self._adopt(None)
-        run = self._runs.get(chat_id)
-        if run is not None and self.chat is not None and self.chat.id == chat_id:
-            return Outcome(Step.UPDATED)
+        live = self.runtime.chats.get(chat_id)
+        if live is not None:
+            return self._adopt(live)
         raw = store.load_chat(chat_id)
         if raw is None:
             return Outcome(Step.ERROR, "That chat could not be loaded.")
-        return self._adopt(Chat.from_dict(raw))
+        return self._adopt(self.runtime.remember(Chat.from_dict(raw)))
 
     def open_first(self, scenario: str | None) -> Outcome:
         chats = store.list_chats(scenario)
         if not chats:
             return self._adopt(None)
-        # Keep the live object if that chat is mid-reply.
-        if self.chat is not None and self.chat.id == chats[0]["id"] \
-                and chats[0]["id"] in self._runs:
-            return Outcome(Step.UPDATED)
-        return self._adopt(Chat.from_dict(chats[0]))
+        return self.open(chats[0]["id"])
 
     def new_chat(self) -> Outcome:
         scenario = self.scenario()
-        raw = store.new_chat(self.scenario_name, appstate.state.current_model, None)
+        raw = store.new_chat(self.scenario_name, self.model_name, None)
         chat = Chat.from_dict(raw)
         opening = prompt.opening_message(scenario)
         if opening is not None:
             chat.append(opening)
             self._save(chat)
-        return self._adopt(chat)
+        return self._adopt(self.runtime.remember(chat))
 
     def delete(self, chat_id: str) -> Outcome:
         if self._occupied(chat_id):
@@ -101,6 +133,7 @@ class ChatService:
                            "Wait for generation to finish before deleting this chat.")
         was_open = self.chat is not None and self.chat.id == chat_id
         store.delete_chat(chat_id)
+        self.runtime.forget(chat_id)
         if was_open:
             return self.open_first(self.scenario_name)
         return Outcome(Step.UPDATED)
@@ -113,14 +146,16 @@ class ChatService:
                            "Wait for generation to finish before renaming this chat.")
         if not store.rename_chat(chat_id, title):
             return Outcome(Step.ERROR, "That chat could not be renamed.")
-        if self.chat is not None and self.chat.id == chat_id:
-            self.chat.title = title.strip()
-            self.chat.title_custom = True
+        live = self.runtime.chats.get(chat_id)
+        if live is not None:
+            live.title = title.strip()
+            live.title_custom = True
         return Outcome(Step.UPDATED)
 
     def _save(self, chat: Chat | None = None) -> None:
         chat = chat or self.chat
         if chat is not None:
+            self.runtime.remember(chat)
             raw = chat.to_dict()
             store.save_chat(raw)
             chat.title = raw.get("title", chat.title)
@@ -128,26 +163,30 @@ class ChatService:
 
     # ── generation ───────────────────────────────────────────────────────────
     def run_for(self, chat_id: str | None) -> ChatRun | None:
-        return self._runs.get(chat_id or "")
+        return self.runtime.runs.get(chat_id or "")
 
     @property
     def run(self) -> ChatRun | None:
-        return self._runs.get(self.chat.id) if self.chat else None
+        return self.runtime.runs.get(self.chat.id) if self.chat else None
 
     def busy(self, chat_id: str | None = None) -> bool:
         chat_id = chat_id or (self.chat.id if self.chat else "")
-        if chat_id in self._compacting:
+        if chat_id in self.runtime.compacting:
             return True
-        run = self._runs.get(chat_id)
+        run = self.runtime.runs.get(chat_id)
         return run is not None and not run.done
 
     def _occupied(self, chat_id: str) -> bool:
         """Mid-reply or mid-recap: something else is writing to this chat."""
-        return chat_id in self._compacting or self.run_for(chat_id) is not None
+        return chat_id in self.runtime.compacting or self.run_for(chat_id) is not None
 
-    def _finish(self, chat_id: str) -> None:
-        self._runs.pop(chat_id, None)
-        if chat_id in appstate.state.generations:
+    def _finish(self, chat_id: str, run: ChatRun) -> None:
+        # An observer for an older reply can wake after another tab has already
+        # started a new one in this chat. Never retire the replacement run.
+        if self.runtime.runs.get(chat_id) is not run:
+            return
+        self.runtime.runs.pop(chat_id, None)
+        if appstate.state.generations.get(chat_id) is run:
             del appstate.state.generations[chat_id]
 
     def _reply(self) -> Outcome:
@@ -158,12 +197,13 @@ class ChatService:
                            supports_system_role=engine.server.supports_system_role())
         message = chat.append(Message(
             role=Role.ASSISTANT, name=self.scenario_name or "",
-            model=engine.server.model or appstate.state.current_model))
+            model=engine.server.model or self.model_name))
         self._save()
         run = ChatRun(chat.id, message, len(chat.messages) - 1, api,
-                      dict(appstate.state.current_params),
+                      dict(self.params),
                       on_persist=lambda: self._save(chat))
-        self._runs[chat.id] = run
+        run.on_done = lambda: self._finish(chat.id, run)
+        self.runtime.runs[chat.id] = run
         # Shared with the editing service, which refuses to start while the one
         # llama-server is busy.
         appstate.state.generations[chat.id] = run
@@ -221,8 +261,7 @@ class ChatService:
 
     def complete_run(self, run: ChatRun) -> Outcome:
         """Retire a finished reply. The message already holds its own text."""
-        self._finish(run.chat_id)
-        self._save()
+        self._finish(run.chat_id, run)
         if run.error:
             return Outcome(Step.ERROR, f"Generation error: {run.error}")
         return Outcome(Step.UPDATED)
@@ -272,6 +311,7 @@ class ChatService:
             -> compaction.Plan | None:
         return compaction.plan(
             self.chat, self.scenario(), draft=draft, force=force,
+            params=self.params,
             supports_system_role=engine.server.supports_system_role())
 
     def compact(self, draft: str = "", *, force: bool = False,
@@ -307,12 +347,12 @@ class ChatService:
                 return Outcome(Step.UPDATED, en.COMPACT_NOT_NEEDED)
             return Outcome(Step.BLOCKED, en.CHAT_TOO_LONG)
 
-        self._compacting.add(chat.id)
+        self.runtime.compacting.add(chat.id)
         # Shared with the editing service, which refuses to start while the one
         # llama-server is busy.
         appstate.state.generations[chat.id] = {"kind": "compaction"}
         def progress(step: int, total: int) -> None:
-            self.compaction_step = (step, total)
+            self.runtime.compaction_steps[chat.id] = (step, total)
 
         try:
             summary = compaction.run(
@@ -323,8 +363,8 @@ class ChatService:
                 chat.summaries.append(retired)  # a failed redo keeps the old one
             return Outcome(Step.ERROR, f"Compaction failed: {exc}")
         finally:
-            self._compacting.discard(chat.id)
-            self.compaction_step = None
+            self.runtime.compacting.discard(chat.id)
+            self.runtime.compaction_steps.pop(chat.id, None)
             appstate.state.generations.pop(chat.id, None)
         chat.summaries.append(summary)
         self._save(chat)
@@ -340,4 +380,4 @@ class ChatService:
         return compaction.window()
 
 
-chat = ChatService()
+chat_runtime = ChatRuntime()

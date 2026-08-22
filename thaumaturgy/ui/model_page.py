@@ -6,7 +6,7 @@ and, in edit mode, the parameter-set editor. VRAM is a rough pre-load estimate;
 the detected max context comes from the GGUF metadata.
 """
 
-from nicegui import app, run, ui
+from nicegui import app, context, run, ui
 
 from thaumaturgy import appstate, engine, hf_download, store
 from thaumaturgy.lang import en
@@ -216,6 +216,10 @@ def _filtered_variants(variants: list[dict], quant: str | None) -> list[dict]:
 def _model_card(bridge):
     models = engine.list_models()
 
+    def remember_model(value: str | None) -> None:
+        appstate.state.current_model = value
+        bridge["persist_model"](value)
+
     def server_output_text() -> str:
         lines = engine.server.output_lines()
         return "\n".join(lines) if lines else "No llama.cpp output yet."
@@ -232,8 +236,9 @@ def _model_card(bridge):
             ui.label("Runtime Settings").classes("text-xs text-muted uppercase tracking-wide")
             with ui.row().classes("w-full items-center gap-2 no-wrap"):
                 if models:
-                    model = ui.select(options=models, value=appstate.state.current_model
-                                      if appstate.state.current_model in models else models[0]) \
+                    preferred = bridge.get("selected_model")
+                    model = ui.select(options=models, value=preferred
+                                      if preferred in models else models[0]) \
                         .classes("tg-field").props("filled").style("flex:1;min-width:0")
                 else:
                     model = ui.select(options=["(no models found)"], value="(no models found)") \
@@ -267,13 +272,13 @@ def _model_card(bridge):
                 model.set_options(names, value=value if value in names else names[0])
                 model.enable()
                 delete_btn.enable()
-                appstate.state.current_model = model.value
+                remember_model(model.value)
                 bridge["select_model_defaults"](model.value)
             else:
                 model.set_options(["(no models found)"], value="(no models found)")
                 model.disable()
                 delete_btn.disable()
-                appstate.state.current_model = None
+                remember_model(None)
                 # select_model_defaults early-returns on the placeholder, so the
                 # editor would still be bound to the model just deleted.
                 bridge["refresh_runtime_owner"]()
@@ -316,8 +321,9 @@ def _model_card(bridge):
         delete_btn.on_click(ask_delete)
         del_ok.on_click(do_delete)
         if models:
-            appstate.state.current_model = model.value
-            bridge["select_model_defaults"](model.value, update_selectors=False)
+            remember_model(model.value)
+            if not bridge.get("preserve_initial_params"):
+                bridge["select_model_defaults"](model.value, update_selectors=False)
 
         # ── Download-model dialog ────────────────────────────────────────────
         with ui.dialog() as dl_dialog, ui.card().classes("p-5 gap-3") \
@@ -388,7 +394,7 @@ def _model_card(bridge):
                 outcomes.toast(f"Downloaded {name}", "positive")
                 model.set_options(engine.list_models(), value=name)
                 model.enable()
-                appstate.state.current_model = name
+                remember_model(name)
                 bridge["select_model_defaults"](name)
                 refresh_status()
                 refresh_preview()
@@ -593,16 +599,36 @@ def _model_card(bridge):
         load_btn.on_click(load)
 
         def on_model_change(_=None):
-            appstate.state.current_model = model.value
+            remember_model(model.value)
             bridge["select_model_defaults"](model.value)
 
         model.on_value_change(on_model_change)
         refresh_status()
 
 
-def render():
+async def render():
     """Model page: model/profile selection, load preview, and profile editors."""
-    bridge: dict = {"refresh_preview": lambda: None}
+    await context.client.connected()
+    tab = app.storage.tab
+    user = app.storage.user
+    selected_model = tab.get("selected_model") or user.get("selected_model") \
+        or appstate.state.current_model
+
+    def persist_model(value: str | None) -> None:
+        if value:
+            tab["selected_model"] = value
+            user["selected_model"] = value
+        else:
+            tab.pop("selected_model", None)
+            user.pop("selected_model", None)
+
+    remembered_param = tab.get("parameter_set") or user.get("parameter_set")
+    bridge: dict = {
+        "refresh_preview": lambda: None,
+        "selected_model": selected_model,
+        "persist_model": persist_model,
+        "preserve_initial_params": bool(remembered_param),
+    }
     sliders: dict[str, ui.slider] = {}
 
     doc = store.load_presets()
@@ -622,7 +648,8 @@ def render():
             return pinned
         return DEFAULT_PRESET if DEFAULT_PRESET in sets else order[0]
 
-    start = param_default_for_model(None)
+    start = remembered_param if remembered_param in sets \
+        else param_default_for_model(selected_model)
 
     state = {
         "mode": "view",
@@ -667,7 +694,12 @@ def render():
         return model_runtime(current_model())
 
     def sync_active_params():
-        appstate.state.current_params = dict(param_values(state["active"]))
+        params = dict(param_values(state["active"]))
+        appstate.state.current_params = params
+        tab["parameter_set"] = state["active"]
+        tab["generation_params"] = params
+        user["parameter_set"] = state["active"]
+        user["generation_params"] = params
 
     def refresh_selectors():
         sel = bridge.get("param_select")

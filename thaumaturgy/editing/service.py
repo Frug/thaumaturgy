@@ -1,15 +1,16 @@
-"""The editing service: owns the open job, the in-flight run, and the rules.
+"""The editing service: selected jobs, shared workflows, and their rules.
 
 Every method returns an Outcome describing what happened, so the whole state
 machine (retry-on-truncation, auto-accept, cursor advance) can be driven from
 a script with no UI attached.
 
-One instance for the process, like engine.server. That also means a browser
-reload cannot orphan a run: the page re-attaches to whatever is in flight.
+The runtime is process-wide so a browser reload cannot orphan a run. Service
+instances are page-local so tabs do not change one another's selected job.
 """
 
 import json
 import time
+from dataclasses import dataclass
 from enum import StrEnum, auto
 
 from thaumaturgy import appstate, engine, store
@@ -42,24 +43,86 @@ class Step(StrEnum):
     IDLE = auto()         # nothing open
 
 
+@dataclass
+class EditingState:
+    """One live document workflow, shared by pages attached to that job."""
+
+    job: Job
+    run: SpanRun | None = None
+    index: int | None = None
+    sent: tuple[int, list[dict]] | None = None
+
+
+class EditingRuntime:
+    """Process-wide editing workflows which must survive page navigation."""
+
+    def __init__(self):
+        self.states: dict[str, EditingState] = {}
+
+    def remember(self, state: EditingState) -> EditingState:
+        self.states[state.job.id] = state
+        return state
+
+    def forget(self, job_id: str) -> None:
+        self.states.pop(job_id, None)
+
+    def busy(self) -> bool:
+        return any(s.run is not None and not s.run.done for s in self.states.values())
+
+    def occupied(self, job_id: str) -> bool:
+        state = self.states.get(job_id)
+        return state is not None and state.run is not None
+
+
 class EditingService:
-    """Drives one document past the model, span by span."""
+    """A page's selected document, backed by shared workflow state."""
 
     # A span that keeps truncating is halved and retried; past this many
     # attempts hand it to the reviewer rather than shrinking forever.
     MAX_AUTO_SPLITS = 4
 
-    def __init__(self):
-        self.job: Job | None = None
-        self.run: SpanRun | None = None
-        self.index: int | None = None
-        self._sent: tuple[int, list[dict]] | None = None
+    def __init__(self, runtime: EditingRuntime | None = None, *,
+                 model_name: str | None = None):
+        self.runtime = runtime or EditingRuntime()
+        self.model_name = model_name or appstate.state.current_model
+        self._state: EditingState | None = None
+
+    @property
+    def job(self) -> Job | None:
+        return self._state.job if self._state else None
+
+    @property
+    def run(self) -> SpanRun | None:
+        return self._state.run if self._state else None
+
+    @run.setter
+    def run(self, value: SpanRun | None) -> None:
+        if self._state is not None:
+            self._state.run = value
+
+    @property
+    def index(self) -> int | None:
+        return self._state.index if self._state else None
+
+    @index.setter
+    def index(self, value: int | None) -> None:
+        if self._state is not None:
+            self._state.index = value
+
+    @property
+    def _sent(self) -> tuple[int, list[dict]] | None:
+        return self._state.sent if self._state else None
+
+    @_sent.setter
+    def _sent(self, value: tuple[int, list[dict]] | None) -> None:
+        if self._state is not None:
+            self._state.sent = value
 
     # ── job lifecycle ────────────────────────────────────────────────────────
     def create(self, title: str, source_text: str,
                instructions: Instructions, settings: Settings) -> Outcome:
         raw = store.new_job(title, source_text, instructions.system_prompt,
-                            engine.server.model or appstate.state.current_model,
+                            engine.server.model or self.model_name,
                             {**settings.to_dict(), **instructions.to_dict()})
         job = Job.from_dict(raw)
         job.instructions = instructions
@@ -68,6 +131,10 @@ class EditingService:
         return self.resume()
 
     def open(self, job_id: str) -> Outcome:
+        live = self.runtime.states.get(job_id)
+        if live is not None:
+            self._state = live
+            return self.resume()
         raw = store.load_job(job_id)
         if raw is None:
             return Outcome(Step.ERROR, "That document could not be loaded.")
@@ -75,16 +142,12 @@ class EditingService:
         return self.resume()
 
     def close(self) -> None:
-        self.job = None
-        self.run = None
-        self.index = None
-        self._sent = None
+        """Detach this page without discarding the shared workflow."""
+        self._state = None
 
     def _adopt(self, job: Job) -> None:
-        self.job = self._prepare(job)
-        self.run = None
-        self.index = None
-        self._sent = None
+        state = EditingState(job=self._prepare(job))
+        self._state = self.runtime.remember(state)
 
     def _prepare(self, job: Job) -> Job:
         """Attach budgets from the loaded server and, on first open, the spans."""
@@ -108,14 +171,21 @@ class EditingService:
     # ── running ──────────────────────────────────────────────────────────────
     def busy(self) -> bool:
         """True when the single llama-server is already generating something."""
-        if self.run is not None and not self.run.done:
+        if self.runtime.busy():
             return True
         return bool(appstate.state.generations)
+
+    def occupied(self, job_id: str) -> bool:
+        return self.runtime.occupied(job_id)
 
     def resume(self) -> Outcome:
         """Pick up at the first span still needing a decision."""
         if self.job is None:
             return Outcome(Step.IDLE)
+        # A page attaching to an existing workflow observes and completes this
+        # run; it must not start the same span a second time.
+        if self.run is not None:
+            return Outcome(Step.REVIEW)
         index = self.job.next_undecided()
         if index is None:
             self.index = None
@@ -154,12 +224,17 @@ class EditingService:
             return Outcome(Step.IDLE)
         return self.begin(self.index, nudge)
 
-    def complete_run(self) -> Outcome:
+    def complete_run(self, expected: SpanRun | None = None) -> Outcome:
         """Fold a finished run into its span, then apply the rules.
 
         May leave a new run in flight (split-retry, or auto-accept advancing),
         so callers should loop while `self.run` is set.
         """
+        # Two tabs may observe the same run. The first can complete it and
+        # immediately start the next span; the second must not mistake that new
+        # run for the one it just finished observing.
+        if expected is not None and self.run is not expected:
+            return Outcome(Step.REVIEW)
         run, self.run = self.run, None
         if self.job is None or run is None:
             return Outcome(Step.IDLE)
@@ -328,6 +403,4 @@ class EditingService:
             pass
 
 
-# One per process, like engine.server. Named `editor` so it never shadows the
-# module it lives in.
-editor = EditingService()
+editing_runtime = EditingRuntime()

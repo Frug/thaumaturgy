@@ -8,10 +8,10 @@ import asyncio
 import re
 import time
 
-from nicegui import app, run, ui
+from nicegui import app, context, run, ui
 
-from thaumaturgy import appstate, engine, store
-from thaumaturgy.chat import Message, Step, chat
+from thaumaturgy import engine, store
+from thaumaturgy.chat import ChatService, Message, Step, chat_runtime
 from thaumaturgy.lang import en
 from thaumaturgy.ui.outcomes import notify, toast
 
@@ -214,17 +214,34 @@ def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
     return _MessageView(md, box, reasoning_md, row)
 
 
-def render():
+async def render():
     """Build the Chat page inside the current layout container."""
+    # Tab storage is created during the websocket handshake. Waiting here lets
+    # navigation and reload restore this tab without making its selection
+    # process-global.
+    await context.client.connected()
+    tab = app.storage.tab
+    user = app.storage.user
+    remembered_params = tab.get("generation_params") \
+        or user.get("generation_params") or {}
+    chat = ChatService(
+        chat_runtime,
+        params=remembered_params if isinstance(remembered_params, dict) else {},
+        model_name=tab.get("selected_model") or user.get("selected_model"),
+    )
     scenarios = chat.scenarios()
     names = [s.name for s in scenarios]
-    if chat.scenario_name not in names:
-        # appstate carries the scenario last selected, restored from disk on
-        # startup; it may name one that has since been renamed or deleted.
-        remembered = appstate.state.current_scenario
-        chat.scenario_name = remembered if remembered in names \
-            else (names[0] if names else None)
-        appstate.state.current_scenario = chat.scenario_name
+    remembered = tab.get("chat_scenario") or user.get("chat_scenario") \
+        or store.last_scenario()
+    chat.scenario_name = remembered if remembered in names \
+        else (names[0] if names else None)
+
+    remembered_chat = tab.get("chat_id") or user.get("chat_id")
+    available = {raw["id"] for raw in chat.list_chats(chat.scenario_name)}
+    if remembered_chat in available:
+        chat.open(remembered_chat)
+    else:
+        chat.open_first(chat.scenario_name)
     page: dict = {"inner": None, "stream_view": None, "observed": None,
                   "fold_anchor": None, "refresh_context": lambda: None}
 
@@ -395,6 +412,14 @@ def render():
 
     # ── Chat management ──────────────────────────────────────────────────────
     def show_current():
+        tab["chat_scenario"] = chat.scenario_name
+        user["chat_scenario"] = chat.scenario_name
+        if chat.chat is None:
+            tab.pop("chat_id", None)
+            user.pop("chat_id", None)
+        else:
+            tab["chat_id"] = chat.chat.id
+            user["chat_id"] = chat.chat.id
         render_messages()
         chat_list.refresh()
         watch()
@@ -852,8 +877,4 @@ def render():
     input_box.on_value_change(schedule_context_refresh)
     context_timer = app.timer(1.0, refresh_context_counter, immediate=False)
 
-    # Reopen the chat this browser left off on, so a reload lands back on the
-    # one that may still be generating.
-    if not (chat.chat and chat.chat.scenario == chat.scenario_name):
-        chat.open_first(chat.scenario_name)
     show_current()

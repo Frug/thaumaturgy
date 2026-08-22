@@ -20,13 +20,15 @@ class ChatRun:
 
     def __init__(self, chat_id: str, message: Message, index: int,
                  api_messages: list[dict], params: dict,
-                 on_persist: Callable[[], None] | None = None):
+                 on_persist: Callable[[], None] | None = None,
+                 on_done: Callable[[], None] | None = None):
         self.chat_id = chat_id
         self.message = message
         self.index = index
         self.api_messages = api_messages
         self.params = params
         self.on_persist = on_persist
+        self.on_done = on_done
         self.done = False
         self.error: str | None = None
         self._raw_text = message.text or ""
@@ -81,4 +83,6 @@ class ChatRun:
         finally:
             self._render(streaming=False)
             self._persist()
-            self.done = True  # last: observers read the chat back once done
+            self.done = True
+            if self.on_done is not None:
+                self.on_done()
