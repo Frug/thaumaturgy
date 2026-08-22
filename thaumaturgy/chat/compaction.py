@@ -91,9 +91,9 @@ def window() -> int | None:
     return engine.trained_ctx(model) if model else None
 
 
-def recap_budget(total: int) -> int:
+def recap_budget(total: int, params: dict | None = None) -> int:
     """How long the recap may run: the parameter set's value, capped to the window."""
-    params = appstate.state.current_params or {}
+    params = appstate.state.current_params if params is None else params
     try:
         wanted = int(params.get("recap_tokens", RECAP_TOKENS_DEFAULT))
     except (TypeError, ValueError):
@@ -101,9 +101,9 @@ def recap_budget(total: int) -> int:
     return max(MIN_RECAP_TOKENS, min(wanted, int(total * MAX_RECAP_SHARE)))
 
 
-def reserve() -> int:
+def reserve(params: dict | None = None) -> int:
     """Tokens to keep free for the reply itself."""
-    params = appstate.state.current_params or {}
+    params = appstate.state.current_params if params is None else params
     try:
         room = int(params.get("max_new_tokens", 512))
     except (TypeError, ValueError):
@@ -154,7 +154,8 @@ def _split_point(messages: list[Message], keep_tokens: int, start: int) -> int:
 
 
 def plan(chat: Chat | None, scenario: Scenario | None, *, draft: str = "",
-         supports_system_role: bool = True, force: bool = False) -> Plan | None:
+         supports_system_role: bool = True, force: bool = False,
+         params: dict | None = None) -> Plan | None:
     """What compaction is needed before the next reply, or None if it isn't.
 
     With `force`, plan one regardless of how full the window is: the user asking
@@ -167,12 +168,12 @@ def plan(chat: Chat | None, scenario: Scenario | None, *, draft: str = "",
     total = window()
     if not total:
         return None
-    room = reserve()
+    room = reserve(params)
     used, _ = _count(chat, scenario, draft, supports_system_role, compacted=True)
     if not force and used + room <= total * TRIGGER_RATIO:
         return None
 
-    budget = recap_budget(total)
+    budget = recap_budget(total, params)
     overhead = engine.estimate_tokens(scenario.context) if scenario else 0
     keep = int(total * TARGET_RATIO) - room - budget - overhead
     if force:

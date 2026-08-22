@@ -6,10 +6,11 @@ shows what it reports and collects decisions.
 
 import asyncio
 
-from nicegui import ui
+from nicegui import app, context, ui
 
 from thaumaturgy import appstate, engine, store
-from thaumaturgy.editing import Instructions, Settings, Status, Step, editor
+from thaumaturgy.editing import (EditingService, Instructions, Settings, Status,
+                                 Step, editing_runtime)
 from thaumaturgy.editing.spans import est_tokens
 from thaumaturgy.lang import en
 from thaumaturgy.ui.outcomes import notify
@@ -111,8 +112,19 @@ def _stored_percent(raw: dict) -> int:
     return round(done / total * 100) if total else 0
 
 
-def render():
+async def render():
     """Build the Editing page inside the current layout container."""
+    await context.client.connected()
+    tab = app.storage.tab
+    user = app.storage.user
+    editor = EditingService(
+        editing_runtime,
+        model_name=tab.get("selected_model") or user.get("selected_model"),
+    )
+    remembered = tab.get("editing_job_id") or user.get("editing_job_id")
+    available = {raw["id"] for raw in store.list_jobs()}
+    if remembered in available:
+        editor.open(remembered)
     page: dict = {"nudge": "", "stream_box": None, "watching": False}
 
     # ── Outcome rendering ───────────────────────────────────────────────────
@@ -146,7 +158,7 @@ def render():
                     if run.text != last:
                         last = run.text
                         box.set_content(f"```\n{run.text}\n```")
-                notify(editor.complete_run())
+                notify(editor.complete_run(run))
                 job_list.refresh()
                 review.refresh()
         finally:
@@ -189,10 +201,11 @@ def render():
                         .props("flat round dense size=sm").tooltip("Delete document")
 
     def remove_job(job_id: str):
-        if editor.running:
+        if editor.occupied(job_id):
             ui.notify(en.SPAN_BUSY, type="warning")
             return
         store.delete_job(job_id)
+        editing_runtime.forget(job_id)
         if editor.job is not None and editor.job.id == job_id:
             editor.close()
         job_list.refresh()
@@ -546,6 +559,12 @@ def render():
     # ── Layout ──────────────────────────────────────────────────────────────
     def show_panels():
         has_job = editor.job is not None
+        if has_job:
+            tab["editing_job_id"] = editor.job.id
+            user["editing_job_id"] = editor.job.id
+        else:
+            tab.pop("editing_job_id", None)
+            user.pop("editing_job_id", None)
         review_card.set_visibility(has_job)
         intake_card.set_visibility(not has_job)
         if has_job:

@@ -1,5 +1,6 @@
 """thaumaturgy entrypoint: application shell (header + nav drawer) and page routes."""
 
+import inspect
 import os
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -33,15 +34,17 @@ def layout_page(route: str, pad: str = "p-2") -> Callable[[Callable[[], None]], 
     """Register a NiceGUI page at `route`, wrapping its body in the shared layout."""
     def decorator(render: Callable[[], None]) -> None:
         @ui.page(route)
-        def _route() -> None:
+        async def _route() -> None:
             with layout(route, pad=pad):
-                render()
+                result = render()
+                if inspect.isawaitable(result):
+                    await result
     return decorator
 
 
 @layout_page("/")
 def page_chat():
-    chat_page.render()
+    return chat_page.render()
 
 
 @layout_page("/scenarios")
@@ -51,12 +54,12 @@ def page_scenarios():
 
 @layout_page("/editing")
 def page_editing():
-    editing_page.render()
+    return editing_page.render()
 
 
 @layout_page("/model")
 def page_model():
-    model_page.render()
+    return model_page.render()
 
 
 @layout_page("/settings")
