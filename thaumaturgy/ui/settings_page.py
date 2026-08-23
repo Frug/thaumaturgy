@@ -25,6 +25,52 @@ def render() -> None:
         ui.label("Settings").classes("text-2xl font-semibold")
 
         with ui.column().classes("tg-pset-box w-full gap-2"):
+            ui.label("Model storage").classes(
+                "text-xs text-muted uppercase tracking-wide")
+            default_models_dir = paths.sub_dir("models")
+            models_input = ui.input(
+                label="Models directory",
+                value=store.models_dir_setting(),
+                placeholder=str(default_models_dir),
+            ).classes("w-full tg-field").props("filled clearable")
+            ui.label(
+                "The Model page finds, downloads, loads, and deletes GGUF files "
+                "here. Leave blank to use the models folder in the data "
+                "directory. A model already loaded keeps running until you "
+                "unload it."
+            ).classes("text-xs text-muted leading-snug")
+            models_status = ui.label().classes("text-sm text-muted break-all")
+
+            def refresh_models_status() -> None:
+                raw = store.models_dir_setting()
+                current = Path(raw).expanduser() if raw else default_models_dir
+                models_status.text = f"Using {current}"
+
+            def save_models() -> None:
+                raw = (models_input.value or "").strip()
+                target = Path(raw).expanduser() if raw else default_models_dir
+                try:
+                    target.mkdir(parents=True, exist_ok=True)
+                except OSError as exc:
+                    ui.notify(f"Can't use that directory: {exc}", type="negative")
+                    return
+                store.save_models_dir(raw)
+                refresh_models_status()
+                ui.notify(f"Models directory set to {target}", type="positive")
+
+            def use_default_models() -> None:
+                models_input.value = ""
+                save_models()
+
+            with ui.row().classes("w-full gap-2"):
+                ui.button("Save", icon="save", on_click=save_models) \
+                    .props("color=positive unelevated")
+                ui.button("Use default", icon="restart_alt",
+                          on_click=use_default_models).props("flat")
+
+            refresh_models_status()
+
+        with ui.column().classes("tg-pset-box w-full gap-2"):
             ui.label("Chat compaction").classes(
                 "text-xs text-muted uppercase tracking-wide")
 
