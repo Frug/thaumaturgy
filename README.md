@@ -30,9 +30,39 @@ make start           # uv run thaumaturgy         (no hot reload)
 make start-dev       # python -m thaumaturgy.main (hot reload for development)
 ```
 
-- `THAUM_PORT` — port to serve on (default `8080`).
+- `THAUM_HOST` — address for the Thaumaturgy admin UI (default `127.0.0.1`).
+- `THAUM_PORT` — admin UI port (default `8080`).
 - `THAUM_DATA` — data directory (default `./data`).
 - `THAUM_LOG_DIR` — diagnostic log directory; overrides the one set on the Settings page, which is where it is normally configured (off by default).
+- `THAUM_LLAMA_HOST` — address for the managed OpenAI-compatible llama-server
+  (default `127.0.0.1`). Set to `0.0.0.0` to accept connections from other
+  machines.
+- `THAUM_LLAMA_PORT` — fixed llama-server port. Unset, Thaumaturgy chooses a
+  free local port whenever a model is loaded.
+- `THAUM_LLAMA_API_KEY` — bearer token required by llama-server. This is
+  mandatory when `THAUM_LLAMA_HOST` is not a loopback address.
+
+The same values can be managed under **Settings → Network and OpenAI-compatible
+API**. Each listener has an **Allow network access** switch, which selects
+`0.0.0.0` when on and `127.0.0.1` when off, plus its own port. The model API
+also has a configurable bearer key. Environment variables take precedence over
+saved values. Web UI changes apply after restarting Thaumaturgy; model API
+changes apply when the model is next loaded.
+
+For example, this makes a loaded model available at
+`http://HOST:11434/v1/chat/completions` while keeping the Thaumaturgy UI on its
+usual port:
+
+```bash
+THAUM_LLAMA_HOST=0.0.0.0 \
+THAUM_LLAMA_PORT=11434 \
+THAUM_LLAMA_API_KEY='replace-with-a-long-random-secret' \
+make start
+```
+
+Clients must send `Authorization: Bearer <THAUM_LLAMA_API_KEY>`. The built-in
+listener is plain HTTP; use a TLS reverse proxy or a private overlay network
+before routing it over the public Internet so the key and prompts are encrypted.
 
 The `training` extra (`uv sync --extra training`) adds torch/transformers/etc.,
 used for the safetensors→GGUF conversion path in the model downloader and, later,

@@ -9,6 +9,7 @@ Single model at a time (one subprocess); matches local single-user use.
 """
 
 import atexit
+import ipaddress
 import json
 import math
 import os
@@ -188,6 +189,42 @@ def _free_port() -> int:
     return port
 
 
+def _listen_config() -> tuple[str, int | None, str | None]:
+    """Return the llama-server bind address, fixed port, and API key.
+
+    The default remains a private, random loopback listener.  Binding beyond
+    loopback is deliberately refused without authentication because
+    llama-server exposes generation and model-inspection endpoints directly.
+    """
+    saved = store.network_settings()
+    host = (os.environ.get("THAUM_LLAMA_HOST")
+            or ("0.0.0.0" if saved["llama_network_access"]
+                else store.DEFAULT_LLAMA_HOST)).strip()
+    configured_port = saved["llama_port"]
+    raw_port = (os.environ.get("THAUM_LLAMA_PORT")
+                or (str(configured_port) if configured_port is not None else "")).strip()
+    api_key = (os.environ.get("THAUM_LLAMA_API_KEY")
+               or saved["llama_api_key"]).strip() or None
+
+    try:
+        is_loopback = host.lower() == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError as exc:
+        raise RuntimeError(f"THAUM_LLAMA_HOST must be an IP address, not {host!r}") from exc
+    if not is_loopback and api_key is None:
+        raise RuntimeError(
+            "THAUM_LLAMA_API_KEY is required when THAUM_LLAMA_HOST is not loopback")
+
+    if not raw_port:
+        return host, None, api_key
+    try:
+        port = int(raw_port)
+    except ValueError as exc:
+        raise RuntimeError("THAUM_LLAMA_PORT must be an integer") from exc
+    if not 1 <= port <= 65535:
+        raise RuntimeError("THAUM_LLAMA_PORT must be between 1 and 65535")
+    return host, port, api_key
+
+
 class _StreamTally:
     """What one chat request's SSE stream carried.
 
@@ -263,6 +300,7 @@ class LlamaServer:
         self.reasoning: str = "auto"  # thinking mode the server was launched with
         self.reasoning_budget: int = -1  # thinking cap the server was launched with
         self.requested_ctx: int = 0  # the -c value; 0 means "let llama.cpp choose"
+        self.api_key: str | None = None
         self._log_lines: deque[str] = deque(maxlen=SERVER_LOG_LIMIT)
         self._log_lock = threading.Lock()
         self._log_thread: threading.Thread | None = None
@@ -283,6 +321,11 @@ class LlamaServer:
     @property
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
+
+    @property
+    def auth_headers(self) -> dict[str, str]:
+        return ({"Authorization": f"Bearer {self.api_key}"}
+                if self.api_key else {})
 
     def output_lines(self) -> list[str]:
         with self._log_lock:
@@ -339,11 +382,12 @@ class LlamaServer:
         path = models_dir() / model_name
         if not path.exists():
             raise FileNotFoundError(f"Model not found: {path}")
-        port = _free_port()
+        host, configured_port, api_key = _listen_config()
+        port = configured_port or _free_port()
         cmd = [
             str(llama_bins.server_path()),
             "-m", str(path),
-            "--host", "127.0.0.1", "--port", str(port),
+            "--host", host, "--port", str(port),
             "-ngl", str(gpu_layers),
             "-c", str(ctx_size),
             "-cram", str(cache_ram),
@@ -365,11 +409,17 @@ class LlamaServer:
         self.reasoning = reasoning
         self.reasoning_budget = reasoning_budget
         self.requested_ctx = ctx_size
+        self.api_key = api_key
         self._clear_output()
         self._append_output("$ " + " ".join(shlex.quote(str(part)) for part in cmd))
+        child_env = os.environ.copy()
+        if api_key:
+            # Keep the secret out of the command line, process list, and the
+            # llama-server output displayed in the UI.
+            child_env["LLAMA_API_KEY"] = api_key
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True, encoding="utf-8", errors="replace",
-                                     bufsize=1)
+                                     bufsize=1, env=child_env)
         if self.proc.stdout is not None:
             self._log_thread = threading.Thread(target=self._capture_output,
                                                 args=(self.proc.stdout,),
@@ -393,7 +443,8 @@ class LlamaServer:
                 self.stop()
                 raise RuntimeError("llama-server exited during startup")
             try:
-                if requests.get(f"{self.base_url}/health", timeout=2).status_code == 200:
+                if requests.get(f"{self.base_url}/health", headers=self.auth_headers,
+                                timeout=2).status_code == 200:
                     return
             except requests.RequestException:
                 pass
@@ -408,7 +459,8 @@ class LlamaServer:
         a failed load for a server that is serving.
         """
         try:
-            props = requests.get(f"{self.base_url}/props", timeout=10).json()
+            props = requests.get(f"{self.base_url}/props", headers=self.auth_headers,
+                                 timeout=10).json()
             if not isinstance(props, dict):
                 props = {}
             gen = props.get("default_generation_settings")
@@ -464,6 +516,7 @@ class LlamaServer:
         self.reasoning = "auto"
         self.reasoning_budget = -1
         self.requested_ctx = 0
+        self.api_key = None
         _pidfile().unlink(missing_ok=True)
 
     @staticmethod
@@ -533,6 +586,7 @@ class LlamaServer:
                 r = requests.post(
                     f"{self.base_url}/apply-template",
                     json={"messages": messages, "add_generation_prompt": True},
+                    headers=self.auth_headers,
                     timeout=10,
                 )
                 r.raise_for_status()
@@ -549,7 +603,8 @@ class LlamaServer:
                 {"content": prompt},
             ):
                 try:
-                    r = requests.post(f"{self.base_url}/tokenize", json=payload, timeout=10)
+                    r = requests.post(f"{self.base_url}/tokenize", json=payload,
+                                      headers=self.auth_headers, timeout=10)
                     r.raise_for_status()
                     count = self._token_count_from_json(r.json())
                     if count is not None:
@@ -571,7 +626,8 @@ class LlamaServer:
             for payload in ({"content": text, "add_special": False},
                             {"content": text}):
                 try:
-                    r = requests.post(f"{self.base_url}/tokenize", json=payload, timeout=10)
+                    r = requests.post(f"{self.base_url}/tokenize", json=payload,
+                                      headers=self.auth_headers, timeout=10)
                     r.raise_for_status()
                     count = self._token_count_from_json(r.json())
                     if count is not None:
@@ -653,7 +709,8 @@ class LlamaServer:
                  if log_dir() is not None else None)
         try:
             with requests.post(f"{self.base_url}/v1/chat/completions",
-                               json=body, stream=True, timeout=600) as r:
+                               json=body, headers=self.auth_headers,
+                               stream=True, timeout=600) as r:
                 if not r.ok:
                     raise RuntimeError(
                         f"llama-server returned {r.status_code}: {self._error_message(r)}")

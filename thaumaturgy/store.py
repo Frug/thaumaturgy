@@ -260,8 +260,56 @@ def load_app_config() -> dict:
 
 
 def save_app_config(config: dict) -> None:
-    _write_atomic(_app_config_path(),
-                  yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
+    path = _app_config_path()
+    _write_atomic(path, yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
+    # app_config can contain the llama-server API key.
+    path.chmod(0o600)
+
+
+DEFAULT_APP_HOST = "127.0.0.1"
+DEFAULT_LLAMA_HOST = "127.0.0.1"
+DEFAULT_APP_PORT = 8080
+
+
+def network_settings() -> dict:
+    """Saved listener settings; environment variables may override these."""
+    network = _as_mapping(load_app_config().get("network"))
+
+    def text(name: str, default: str = "") -> str:
+        value = network.get(name)
+        return value.strip() if isinstance(value, str) else default
+
+    def network_access(name: str, old_host_name: str) -> bool:
+        value = network.get(name)
+        if isinstance(value, bool):
+            return value
+        # Migrate the short-lived bind-address form of this setting.
+        return text(old_host_name) == "0.0.0.0"
+
+    app_port = network.get("app_port")
+    llama_port = network.get("llama_port")
+    return {
+        "app_network_access": network_access("app_network_access", "app_host"),
+        "app_port": app_port if isinstance(app_port, int) else DEFAULT_APP_PORT,
+        "llama_network_access": network_access(
+            "llama_network_access", "llama_host"),
+        "llama_port": llama_port if isinstance(llama_port, int) else None,
+        "llama_api_key": text("llama_api_key"),
+    }
+
+
+def save_network_settings(app_network_access: bool, app_port: int,
+                          llama_network_access: bool, llama_port: int | None,
+                          llama_api_key: str) -> None:
+    config = load_app_config()
+    config["network"] = {
+        "app_network_access": bool(app_network_access),
+        "app_port": app_port,
+        "llama_network_access": bool(llama_network_access),
+        "llama_port": llama_port,
+        "llama_api_key": llama_api_key.strip(),
+    }
+    save_app_config(config)
 
 
 def save_last_loaded_model(model_name: str | None) -> None:
