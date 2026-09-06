@@ -771,7 +771,7 @@ async def render():
                         .classes("tg-chat-menu")
                     # Without this the click reaches the row and opens the chat.
                     menu_btn.on("click.stop", js_handler="() => {}")
-                    with menu_btn, ui.menu().props("auto-close"):
+                    with menu_btn, ui.menu().props("auto-close transition-duration=0"):
                         label = "Unfavorite" if raw.get("favorite") else "Favorite"
                         ui.menu_item(label, on_click=lambda r=raw: set_favorite_chat(r))
                         ui.menu_item("Rename", on_click=lambda r=raw: ask_rename_chat(r))
