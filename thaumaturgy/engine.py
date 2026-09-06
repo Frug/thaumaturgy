@@ -31,8 +31,18 @@ SERVER_LOG_LIMIT = 500
 STREAM_RAW_LIMIT = 2000
 
 
-def models_dir():
-    return sub_dir("models")
+def models_dir() -> Path:
+    """Directory currently used for model discovery, downloads, and loading.
+
+    Read the setting on every call so changing it in the running app takes
+    effect as soon as another page or operation consults the model library.
+    """
+    configured = store.models_dir_setting()
+    if not configured:
+        return sub_dir("models")
+    path = Path(configured).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _pidfile() -> Path:
@@ -111,8 +121,8 @@ def delete_model(name: str) -> list[str]:
     files = model_files(name)
     if not files:
         raise RuntimeError(f"{name} is already gone.")
-    if server.running and server.model:
-        if (models_dir() / server.model) in files:
+    if server.running and server.model_path:
+        if server.model_path in files:
             raise RuntimeError(f"{server.model} is loaded — unload it first.")
     removed = []
     for path in files:
@@ -130,7 +140,7 @@ _max_gpu_layers_cache: dict[tuple, int | None] = {}
 
 def _drop_cached(name: str) -> None:
     for cache in (_ctx_cache, _max_gpu_layers_cache):
-        for key in [k for k in cache if k[0] == name]:
+        for key in [k for k in cache if Path(k[0]).name == name]:
             del cache[key]
 
 
@@ -140,7 +150,9 @@ def _read_metadata(cache: dict, model_name: str, read) -> int | None:
     path = models_dir() / model_name
     try:
         stat = path.stat()
-        key = (model_name, stat.st_mtime_ns, stat.st_size)
+        # Include the directory: two libraries can contain same-named files
+        # with identical timestamps and sizes but different metadata.
+        key = (path.absolute(), stat.st_mtime_ns, stat.st_size)
     except OSError:
         return None
     if key not in cache:
@@ -245,6 +257,7 @@ class LlamaServer:
         self.proc: subprocess.Popen | None = None
         self.port: int | None = None
         self.model: str | None = None
+        self.model_path: Path | None = None
         self.n_ctx: int | None = None  # trained/effective context, learned after load
         self.chat_template_caps: dict = {}
         self.reasoning: str = "auto"  # thinking mode the server was launched with
@@ -364,6 +377,7 @@ class LlamaServer:
             self._log_thread.start()
         self.port = port
         self.model = model_name
+        self.model_path = path
         _pidfile().write_text(str(self.proc.pid))
         self._wait_ready()
         self._read_props()
@@ -444,6 +458,7 @@ class LlamaServer:
         self.proc = None
         self.port = None
         self.model = None
+        self.model_path = None
         self.n_ctx = None
         self.chat_template_caps = {}
         self.reasoning = "auto"

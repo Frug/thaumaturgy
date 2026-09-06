@@ -278,6 +278,22 @@ def last_loaded_model() -> str | None:
     return model if isinstance(model, str) and model else None
 
 
+def models_dir_setting() -> str:
+    """The configured model directory, or "" for the data-dir default."""
+    value = load_app_config().get("models_dir")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def save_models_dir(path: str | None) -> None:
+    config = load_app_config()
+    path = (path or "").strip()
+    if path:
+        config["models_dir"] = path
+    else:
+        config.pop("models_dir", None)
+    save_app_config(config)
+
+
 def save_last_scenario(name: str | None) -> None:
     config = load_app_config()
     if name:

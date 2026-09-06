@@ -184,6 +184,10 @@ def fetch_variant(repo_id: str, files: list[str], on_progress=lambda _m: None) -
     """Download one already-GGUF variant; returns the filename to load."""
     from huggingface_hub import hf_hub_download
 
+    # Pin one destination for the entire operation. If the setting changes in
+    # another browser tab mid-download, a shard set must not be split across
+    # the old and new model directories.
+    destination = models_dir()
     # Downloaded into the data dir rather than through the shared HF cache,
     # which keeps its own copy of every file it fetches: a model pulled that way
     # costs twice its size on disk for as long as the cache is left alone.
@@ -191,8 +195,15 @@ def fetch_variant(repo_id: str, files: list[str], on_progress=lambda _m: None) -
     for i, rel in enumerate(files, 1):
         on_progress(f"Downloading {i}/{len(files)}: {os.path.basename(rel)}…")
         local = hf_hub_download(repo_id, rel, local_dir=str(work))
-        # Same filesystem as the staging dir, so the model is moved, not copied.
-        os.replace(local, models_dir() / os.path.basename(rel))
+        target = destination / os.path.basename(rel)
+        partial = target.with_name(f".{target.name}.partial")
+        try:
+            # shutil.move falls back to copy+remove across filesystems. Land on
+            # a hidden sibling first so model discovery never sees half a GGUF.
+            shutil.move(local, partial)
+            os.replace(partial, target)
+        finally:
+            partial.unlink(missing_ok=True)
     # Only once every shard has landed: what is left behind is what a failed
     # download resumes from, and it is this directory the next attempt reuses.
     shutil.rmtree(work, ignore_errors=True)

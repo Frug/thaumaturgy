@@ -40,12 +40,15 @@ for LoRA training.
 
 ## Data Files
 
-Everything user-owned lives under the data dir (`./data` by default) as plain
-files: `scenarios/*.yaml`, `chats/*.json`, and `presets.yaml`. Default scenario
-examples live in `thaumaturgy/defaults/scenarios/` and are copied into
-`data/scenarios/` once for a fresh data directory. After that they are normal
-local scenarios and can be edited or deleted in the UI. The whole `data/`
+By default, everything user-owned lives under the data dir (`./data` by
+default) as plain files: `scenarios/*.yaml`, `chats/*.json`, and `presets.yaml`.
+Default scenario examples live in `thaumaturgy/defaults/scenarios/` and are
+copied into `data/scenarios/` once for a fresh data directory. After that they
+are normal local scenarios and can be edited or deleted in the UI. The whole `data/`
 directory is gitignored, so those local changes do not show up as Git changes.
+Models use `data/models/` by default. Their directory can be changed under
+**Model storage** on the Settings page, including to a path on another drive;
+the change applies without restarting Thaumaturgy.
 
 ## Scenario Variables
 
