@@ -142,6 +142,7 @@ class Chat:
     title: str = "New chat"
     # Set by a rename; stops the title being derived from the first message.
     title_custom: bool = False
+    favorite: bool = False
     created: float = 0.0
     updated: float = 0.0
     messages: list[Message] = field(default_factory=list)
@@ -182,6 +183,7 @@ class Chat:
             id=d["id"], scenario=d.get("scenario"), model=d.get("model"),
             title=d.get("title") or "New chat",
             title_custom=bool(d.get("title_custom")),
+            favorite=bool(d.get("favorite")),
             created=float(d.get("created", 0.0)),
             updated=float(d.get("updated", 0.0)),
             messages=[Message.from_dict(m) for m in (d.get("messages") or [])],
@@ -196,6 +198,8 @@ class Chat:
         }
         if self.title_custom:
             out["title_custom"] = True
+        if self.favorite:
+            out["favorite"] = True
         if self.summaries:
             out["summaries"] = [s.to_dict() for s in self.summaries]
         return out

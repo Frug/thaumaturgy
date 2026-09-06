@@ -546,6 +546,12 @@ async def render():
         pending_rename["chat_id"] = None
         apply(outcome)
 
+    def set_favorite_chat(raw: dict):
+        outcome = chat.set_favorite(raw["id"], not bool(raw.get("favorite")))
+        notify(outcome)
+        if outcome.step is Step.UPDATED:
+            chat_list.refresh()
+
     def message_at(index: int) -> Message | None:
         messages = chat.chat.messages if chat.chat else []
         return messages[index] if 0 <= index < len(messages) else None
@@ -752,8 +758,12 @@ async def render():
                 if active:
                     item.classes("tg-active")
                 with item, ui.item_section().classes("min-w-0"):
-                    ui.label(raw.get("title") or "New chat") \
-                        .classes("font-medium text-sm ellipsis w-full")
+                    with ui.row().classes("w-full items-center gap-1 no-wrap"):
+                        if raw.get("favorite"):
+                            ui.icon("star").props("size=xs color=warning") \
+                                .classes("shrink-0")
+                        ui.label(raw.get("title") or "New chat") \
+                            .classes("font-medium text-sm ellipsis min-w-0 flex-1")
                     ui.label(_rel_time(raw.get("updated"))).classes("text-xs text-muted")
                 with item, ui.item_section().props("side").classes("tg-chat-menu-section"):
                     menu_btn = ui.button(icon="more_vert") \
@@ -762,6 +772,8 @@ async def render():
                     # Without this the click reaches the row and opens the chat.
                     menu_btn.on("click.stop", lambda: None)
                     with menu_btn, ui.menu().props("auto-close"):
+                        label = "Unfavorite" if raw.get("favorite") else "Favorite"
+                        ui.menu_item(label, on_click=lambda r=raw: set_favorite_chat(r))
                         ui.menu_item("Rename", on_click=lambda r=raw: ask_rename_chat(r))
                         ui.menu_item("Delete", on_click=lambda r=raw: ask_delete_chat(r))
 

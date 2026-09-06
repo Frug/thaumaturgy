@@ -2,7 +2,7 @@
 
 import pytest
 
-from thaumaturgy import prompting
+from thaumaturgy import prompting, store
 from thaumaturgy.chat import Chat, Message, Role, Scenario, Step, models, prompt, reply
 from thaumaturgy.chat.service import ChatService
 
@@ -148,6 +148,7 @@ def test_nothing_is_touched_while_a_reply_is_running():
     s._compacting.add(s.chat.id)  # stands in for a run on this chat
     assert s.edit_message(1, "changed").step is Step.BLOCKED
     assert s.delete_message(1).step is Step.BLOCKED
+    assert s.set_favorite("c1", True).step is Step.BLOCKED
     assert s.chat.messages[1].text == "Hello."
 
 
@@ -214,6 +215,7 @@ def test_a_scenario_fills_its_own_text():
 
 def test_serialisation_round_trip():
     c = conversation()
+    c.favorite = True
     c.messages[2].finish_reason = "length"
     c.messages[2].finish_limit = "context"
     c.messages[2].reasoning = "some thinking"
@@ -221,7 +223,22 @@ def test_serialisation_round_trip():
     assert [m.to_dict() for m in back.messages] == [m.to_dict() for m in c.messages]
     assert back.messages[1].role is Role.USER
     assert back.messages[2].finish_limit == "context"
+    assert back.favorite is True
     assert "reasoning" not in c.messages[1].to_dict()  # empty keys stay out
     assert Scenario.from_dict({"name": "n", "context": "c", "_file": "slug"}).file == "slug"
     assert Scenario.from_dict({"name": "n"}).variables == {}
     assert Scenario.from_dict({"name": "n", "variables": {"a": "b"}}).variables == {"a": "b"}
+
+
+def test_favoriting_pins_a_chat_without_refreshing_its_timestamp():
+    first = store.new_chat("favorite-order-test", None)
+    updated = first["updated"]
+    assert store.set_chat_favorite(first["id"], True)
+    second = store.new_chat("favorite-order-test", None)
+
+    chats = store.list_chats("favorite-order-test")
+    assert [chat["id"] for chat in chats] == [first["id"], second["id"]]
+    assert chats[0]["updated"] == updated
+
+    assert store.set_chat_favorite(first["id"], False)
+    assert store.list_chats("favorite-order-test")[0]["id"] == second["id"]

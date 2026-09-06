@@ -152,6 +152,19 @@ class ChatService:
             live.title_custom = True
         return Outcome(Step.UPDATED)
 
+    def set_favorite(self, chat_id: str, favorite: bool) -> Outcome:
+        if self._occupied(chat_id):
+            return Outcome(
+                Step.BLOCKED,
+                "Wait for generation to finish before changing this favorite.")
+        if not store.set_chat_favorite(chat_id, favorite):
+            return Outcome(Step.ERROR, "That chat could not be updated.")
+        live = self.runtime.chats.get(chat_id)
+        if live is not None:
+            live.favorite = favorite
+        action = "Added to" if favorite else "Removed from"
+        return Outcome(Step.UPDATED, f"{action} favorites.")
+
     def _save(self, chat: Chat | None = None) -> None:
         chat = chat or self.chat
         if chat is not None:

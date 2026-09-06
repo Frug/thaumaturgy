@@ -136,7 +136,8 @@ def list_chats(scenario: str | None = None) -> list[dict]:
             continue
         if scenario is None or c.get("scenario") == scenario:
             out.append(c)
-    out.sort(key=lambda c: c.get("updated", 0), reverse=True)
+    out.sort(key=lambda c: (c.get("favorite") is True, c.get("updated") or 0),
+             reverse=True)
     return out
 
 
@@ -151,6 +152,19 @@ def rename_chat(chat_id: str, title: str) -> bool:
         return False
     chat["title"] = title
     chat["title_custom"] = True
+    _write_chat(chat)
+    return True
+
+
+def set_chat_favorite(chat_id: str, favorite: bool) -> bool:
+    """Favorite or unfavorite a chat without making it look recently active."""
+    chat = load_chat(chat_id)
+    if chat is None:
+        return False
+    if favorite:
+        chat["favorite"] = True
+    else:
+        chat.pop("favorite", None)
     _write_chat(chat)
     return True
 
