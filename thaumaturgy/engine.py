@@ -417,6 +417,10 @@ class LlamaServer:
             # Keep the secret out of the command line, process list, and the
             # llama-server output displayed in the UI.
             child_env["LLAMA_API_KEY"] = api_key
+        else:
+            # The managed server's auth must match auth_headers even if the
+            # parent shell happens to use llama.cpp's native variable.
+            child_env.pop("LLAMA_API_KEY", None)
         self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True, encoding="utf-8", errors="replace",
                                      bufsize=1, env=child_env)

@@ -24,7 +24,7 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else []
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def _write_atomic(path: Path, text: str, mode: int | None = None) -> None:
     """Replace `path` in one step, so a concurrent reader never sees a partial file.
 
     Chats are saved from the generation worker thread while the UI thread lists
@@ -32,6 +32,8 @@ def _write_atomic(path: Path, text: str) -> None:
     """
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(text, encoding="utf-8")
+    if mode is not None:
+        tmp.chmod(mode)
     os.replace(tmp, path)
 
 
@@ -261,9 +263,10 @@ def load_app_config() -> dict:
 
 def save_app_config(config: dict) -> None:
     path = _app_config_path()
-    _write_atomic(path, yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
-    # app_config can contain the llama-server API key.
-    path.chmod(0o600)
+    # Set permissions before the atomic replace: app_config can contain the
+    # llama-server API key and must never briefly land world-readable.
+    _write_atomic(path, yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+                  mode=0o600)
 
 
 DEFAULT_APP_HOST = "127.0.0.1"
