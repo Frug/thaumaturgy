@@ -770,7 +770,7 @@ async def render():
                         .props("flat round dense size=sm text-color=white") \
                         .classes("tg-chat-menu")
                     # Without this the click reaches the row and opens the chat.
-                    menu_btn.on("click.stop", lambda: None)
+                    menu_btn.on("click.stop", js_handler="() => {}")
                     with menu_btn, ui.menu().props("auto-close"):
                         label = "Unfavorite" if raw.get("favorite") else "Favorite"
                         ui.menu_item(label, on_click=lambda r=raw: set_favorite_chat(r))
