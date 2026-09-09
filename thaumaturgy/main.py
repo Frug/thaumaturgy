@@ -7,9 +7,15 @@ from contextlib import contextmanager
 
 from nicegui import ui
 
-from thaumaturgy import engine, theme
-from thaumaturgy.ui import (chat_page, editing_page, model_page, nav,
-                            scenarios_page, settings_page)
+from thaumaturgy import engine, store, theme
+from thaumaturgy.ui import (
+    chat_page,
+    editing_page,
+    model_page,
+    nav,
+    scenarios_page,
+    settings_page,
+)
 
 # Clean up a llama-server orphaned by a previous (reloaded) instance. Done from
 # the entrypoint, not on importing engine: a test or a script that merely
@@ -68,9 +74,13 @@ def page_settings():
 
 
 def _launch(reload: bool):
+    saved_network = store.network_settings()
     ui.run(
         title="thaumaturgy",
-        port=int(os.environ.get("THAUM_PORT", "8080")),
+        host=(os.environ.get("THAUM_HOST")
+              or ("0.0.0.0" if saved_network["app_network_access"]
+                  else store.DEFAULT_APP_HOST)),
+        port=int(os.environ.get("THAUM_PORT") or saved_network["app_port"]),
         storage_secret="thaumaturgy-dev",  # enables app.storage.user (theme persistence)
         reload=reload,
         show=False,

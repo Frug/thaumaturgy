@@ -24,7 +24,7 @@ def _as_list(value) -> list:
     return value if isinstance(value, list) else []
 
 
-def _write_atomic(path: Path, text: str) -> None:
+def _write_atomic(path: Path, text: str, mode: int | None = None) -> None:
     """Replace `path` in one step, so a concurrent reader never sees a partial file.
 
     Chats are saved from the generation worker thread while the UI thread lists
@@ -32,6 +32,8 @@ def _write_atomic(path: Path, text: str) -> None:
     """
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(text, encoding="utf-8")
+    if mode is not None:
+        tmp.chmod(mode)
     os.replace(tmp, path)
 
 
@@ -134,7 +136,8 @@ def list_chats(scenario: str | None = None) -> list[dict]:
             continue
         if scenario is None or c.get("scenario") == scenario:
             out.append(c)
-    out.sort(key=lambda c: c.get("updated", 0), reverse=True)
+    out.sort(key=lambda c: (c.get("favorite") is True, c.get("updated") or 0),
+             reverse=True)
     return out
 
 
@@ -149,6 +152,19 @@ def rename_chat(chat_id: str, title: str) -> bool:
         return False
     chat["title"] = title
     chat["title_custom"] = True
+    _write_chat(chat)
+    return True
+
+
+def set_chat_favorite(chat_id: str, favorite: bool) -> bool:
+    """Favorite or unfavorite a chat without making it look recently active."""
+    chat = load_chat(chat_id)
+    if chat is None:
+        return False
+    if favorite:
+        chat["favorite"] = True
+    else:
+        chat.pop("favorite", None)
     _write_chat(chat)
     return True
 
@@ -260,8 +276,57 @@ def load_app_config() -> dict:
 
 
 def save_app_config(config: dict) -> None:
-    _write_atomic(_app_config_path(),
-                  yaml.safe_dump(config, sort_keys=False, allow_unicode=True))
+    path = _app_config_path()
+    # Set permissions before the atomic replace: app_config can contain the
+    # llama-server API key and must never briefly land world-readable.
+    _write_atomic(path, yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+                  mode=0o600)
+
+
+DEFAULT_APP_HOST = "127.0.0.1"
+DEFAULT_LLAMA_HOST = "127.0.0.1"
+DEFAULT_APP_PORT = 8080
+
+
+def network_settings() -> dict:
+    """Saved listener settings; environment variables may override these."""
+    network = _as_mapping(load_app_config().get("network"))
+
+    def text(name: str, default: str = "") -> str:
+        value = network.get(name)
+        return value.strip() if isinstance(value, str) else default
+
+    def network_access(name: str, old_host_name: str) -> bool:
+        value = network.get(name)
+        if isinstance(value, bool):
+            return value
+        # Migrate the short-lived bind-address form of this setting.
+        return text(old_host_name) == "0.0.0.0"
+
+    app_port = network.get("app_port")
+    llama_port = network.get("llama_port")
+    return {
+        "app_network_access": network_access("app_network_access", "app_host"),
+        "app_port": app_port if isinstance(app_port, int) else DEFAULT_APP_PORT,
+        "llama_network_access": network_access(
+            "llama_network_access", "llama_host"),
+        "llama_port": llama_port if isinstance(llama_port, int) else None,
+        "llama_api_key": text("llama_api_key"),
+    }
+
+
+def save_network_settings(app_network_access: bool, app_port: int,
+                          llama_network_access: bool, llama_port: int | None,
+                          llama_api_key: str) -> None:
+    config = load_app_config()
+    config["network"] = {
+        "app_network_access": bool(app_network_access),
+        "app_port": app_port,
+        "llama_network_access": bool(llama_network_access),
+        "llama_port": llama_port,
+        "llama_api_key": llama_api_key.strip(),
+    }
+    save_app_config(config)
 
 
 def save_last_loaded_model(model_name: str | None) -> None:

@@ -1,13 +1,13 @@
 """Settings page: app preferences that persist to <data>/app_config.yaml."""
 
 import os
+import secrets
 from pathlib import Path
 
 from nicegui import ui
 
 from thaumaturgy import paths, store
 from thaumaturgy.lang import en
-
 
 # The editable parts of compaction.yaml, in the order the summarizer sees them.
 RECAP_FIELDS = (
@@ -69,6 +69,125 @@ def render() -> None:
                           on_click=use_default_models).props("flat")
 
             refresh_models_status()
+
+        with ui.column().classes("tg-pset-box w-full gap-2"):
+            ui.label("Network and OpenAI-compatible API").classes(
+                "text-xs text-muted uppercase tracking-wide")
+            network = store.network_settings()
+            app_host_env = (os.environ.get("THAUM_HOST") or "").strip()
+            app_port_env = (os.environ.get("THAUM_PORT") or "").strip()
+            llama_host_env = (os.environ.get("THAUM_LLAMA_HOST") or "").strip()
+            llama_port_env = (os.environ.get("THAUM_LLAMA_PORT") or "").strip()
+            llama_key_env = (os.environ.get("THAUM_LLAMA_API_KEY") or "").strip()
+
+            def host_allows_network(host: str) -> bool:
+                return host not in {"127.0.0.1", "::1", "localhost"}
+
+            ui.label("Web UI").classes("text-sm font-semibold mt-1")
+            app_network_switch = ui.switch(
+                "Allow network access to the web UI",
+                value=(host_allows_network(app_host_env) if app_host_env
+                       else network["app_network_access"]),
+            ).classes("text-sm")
+            app_port_input = ui.input(
+                "Web UI port",
+                value=app_port_env or str(network["app_port"]),
+            ).classes("w-full tg-field").props("filled")
+            ui.label(
+                "The web UI has no authentication. Enabling network access "
+                "lets other devices that can reach this computer manage "
+                "models and settings."
+            ).classes("text-xs text-warning leading-snug")
+
+            ui.label("Model API").classes("text-sm font-semibold mt-3")
+            llama_network_switch = ui.switch(
+                "Allow network access to the model API",
+                value=(host_allows_network(llama_host_env) if llama_host_env
+                       else network["llama_network_access"]),
+            ).classes("text-sm")
+            llama_port_input = ui.input(
+                "Model API port",
+                value=llama_port_env or (
+                    str(network["llama_port"]) if network["llama_port"] else ""),
+                placeholder="Random free port",
+            ).classes("w-full tg-field").props("filled clearable")
+            llama_key_input = ui.input(
+                "Model API key",
+                value=llama_key_env or network["llama_api_key"],
+                password=True,
+                password_toggle_button=True,
+            ).classes("w-full tg-field").props("filled clearable autocomplete=off")
+
+            def generate_key() -> None:
+                llama_key_input.value = secrets.token_hex(32)
+
+            ui.button("Generate new key", icon="key", on_click=generate_key).props("flat")
+            ui.label(
+                "Network access listens on all IPv4 interfaces (0.0.0.0); off "
+                "listens only on this computer (127.0.0.1). The model API "
+                "requires a key when network access is enabled. Web UI changes "
+                "apply after an app restart; model API changes apply the next "
+                "time a model is loaded."
+            ).classes("text-xs text-muted leading-snug")
+
+            network_status = ui.label().classes("text-sm text-muted")
+
+            def read_port(raw: str, label: str, optional: bool = False) -> int | None:
+                raw = raw.strip()
+                if optional and not raw:
+                    return None
+                try:
+                    port = int(raw)
+                except ValueError:
+                    ui.notify(f"{label} must be an integer", type="negative")
+                    return None
+                if not 1 <= port <= 65535:
+                    ui.notify(f"{label} must be between 1 and 65535",
+                              type="negative")
+                    return None
+                return port
+
+            def save_network() -> None:
+                raw_app_port = (app_port_input.value or "").strip()
+                app_port = read_port(raw_app_port, "Web UI port")
+                if app_port is None:
+                    return
+
+                raw_port = (llama_port_input.value or "").strip()
+                llama_port = read_port(raw_port, "Model API port", optional=True)
+                if raw_port and llama_port is None:
+                    return
+
+                api_key = (llama_key_input.value or "").strip()
+                if llama_network_switch.value and not api_key:
+                    ui.notify("Network access to the model API requires an API key",
+                              type="negative")
+                    return
+
+                store.save_network_settings(
+                    app_network_switch.value, app_port,
+                    llama_network_switch.value, llama_port, api_key)
+                network_status.text = (
+                    "Saved. Restart the app for the admin UI address; reload "
+                    "the model for model API changes.")
+                ui.notify("Network settings saved", type="positive")
+
+            ui.button("Save network settings", icon="save", on_click=save_network) \
+                .props("color=positive unelevated")
+
+            overridden = [name for name, value in (
+                ("web UI network access", app_host_env),
+                ("web UI port", app_port_env),
+                ("model API network access", llama_host_env),
+                ("model API port", llama_port_env),
+                ("model API key", llama_key_env),
+            ) if value]
+            if overridden:
+                ui.label(
+                    "Environment variables currently override: "
+                    + ", ".join(overridden)
+                    + ". Saved values take effect after those variables are unset."
+                ).classes("text-xs text-warning leading-snug")
 
         with ui.column().classes("tg-pset-box w-full gap-2"):
             ui.label("Chat compaction").classes(
