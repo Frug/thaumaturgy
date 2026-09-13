@@ -276,6 +276,18 @@ def render() -> None:
                 .classes("text-sm")
             ui.label(en.STREAM_STATS_HELP).classes("text-xs text-muted leading-snug")
 
+            def set_full_response_log(value: bool) -> None:
+                store.save_full_response_log(value)
+                ui.notify("Logging full model responses" if value
+                          else "Full response logging off", type="positive")
+
+            ui.switch("Log full model responses",
+                      value=store.full_response_log(),
+                      on_change=lambda e: set_full_response_log(e.value)) \
+                .classes("text-sm")
+            ui.label(en.FULL_RESPONSE_LOG_HELP).classes(
+                "text-xs text-muted leading-snug")
+
             status = ui.label().classes("text-sm")
 
             def refresh_status() -> None:

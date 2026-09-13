@@ -213,8 +213,15 @@ def _filtered_variants(variants: list[dict], quant: str | None) -> list[dict]:
     return [v for v in variants if v.get("quant") == quant]
 
 
+def _list_models() -> tuple[list[str], str | None]:
+    try:
+        return engine.list_models(), None
+    except OSError as exc:
+        return [], f"Can't read the models directory: {exc}"
+
+
 def _model_card(bridge):
-    models = engine.list_models()
+    models, models_error = _list_models()
 
     def remember_model(value: str | None) -> None:
         appstate.state.current_model = value
@@ -246,8 +253,14 @@ def _model_card(bridge):
                     model.disable()
                 delete_btn = ui.button(icon="delete") \
                     .props("flat dense color=negative").tooltip("Delete this model from disk")
+            models_error_label = ui.label(models_error or "").classes(
+                "text-sm text-negative break-all")
+            models_error_label.set_visibility(models_error is not None)
+            empty_models_label = ui.label(
+                f"Put .gguf files in {engine.models_dir()}" if not models_error else ""
+            ).classes("text-xs text-muted")
+            empty_models_label.set_visibility(not models and models_error is None)
             if not models:
-                ui.label(f"Put .gguf files in {engine.models_dir()}").classes("text-xs text-muted")
                 delete_btn.disable()
         bridge["model_select"] = model
 
@@ -267,7 +280,10 @@ def _model_card(bridge):
             return v if v and not v.startswith("(") else None
 
         def refresh_models(value: str | None = None) -> None:
-            names = engine.list_models()
+            names, error = _list_models()
+            models_error_label.text = error or ""
+            models_error_label.set_visibility(error is not None)
+            empty_models_label.set_visibility(not names and error is None)
             if names:
                 model.set_options(names, value=value if value in names else names[0])
                 model.enable()

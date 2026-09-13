@@ -406,6 +406,20 @@ def save_verbose_stream_log(on: bool) -> None:
     save_app_config(config)
 
 
+def full_response_log() -> bool:
+    """Whether complete model responses are appended to a JSONL log."""
+    return bool(load_app_config().get("full_response_log"))
+
+
+def save_full_response_log(on: bool) -> None:
+    config = load_app_config()
+    if on:
+        config["full_response_log"] = True
+    else:
+        config.pop("full_response_log", None)
+    save_app_config(config)
+
+
 def compaction_divider() -> bool:
     """Whether the chat marks where its recap takes over. On unless turned off."""
     value = load_app_config().get("compaction_divider")

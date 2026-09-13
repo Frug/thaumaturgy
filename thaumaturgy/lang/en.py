@@ -147,4 +147,9 @@ STREAM_STATS_HELP = (
     "token counts and the fields they arrived in — when a bad reply needs "
     "comparing against good ones. Off is the normal setting."
 )
-
+FULL_RESPONSE_LOG_HELP = (
+    "Appends each model response to chat-responses.jsonl, including visible "
+    "content and reasoning content but never the incoming messages or context. "
+    "Responses are stored as plain text, so enable this only in a private log "
+    "directory. Off by default."
+)

@@ -234,14 +234,17 @@ class _StreamTally:
     """
 
     def __init__(self, max_tokens: int | None, reasoning: str, budget: int,
-                 verbose: bool):
+                 verbose: bool, log_response: bool):
         self.max_tokens = max_tokens
         self.reasoning = reasoning
         self.budget = budget
         self.verbose = verbose
+        self.log_response = log_response
         self.keys: dict[str, int] = {}
         self.content_chars = 0
         self.reasoning_chars = 0
+        self.content: list[str] = []
+        self.reasoning_content: list[str] = []
         self.finish_reason: str | None = None
         self.error: str | None = None
         self.raw: deque[str] = deque(maxlen=STREAM_RAW_LIMIT)
@@ -250,8 +253,13 @@ class _StreamTally:
         self.raw.append(data)
         for key in delta:
             self.keys[key] = self.keys.get(key, 0) + 1
-        self.content_chars += len(delta.get("content") or "")
-        self.reasoning_chars += len(delta.get("reasoning_content") or "")
+        content = delta.get("content") or ""
+        reasoning = delta.get("reasoning_content") or ""
+        self.content_chars += len(content)
+        self.reasoning_chars += len(reasoning)
+        if self.log_response:
+            self.content.append(content)
+            self.reasoning_content.append(reasoning)
 
     @property
     def empty(self) -> bool:
@@ -266,25 +274,41 @@ class _StreamTally:
         return f"{line} error={self.error}" if self.error else line
 
     def write(self) -> None:
-        """Append this request's record to the log dir's chat-stream.log.
+        """Append the enabled diagnostic and response records.
 
         Verbose mode records every request; otherwise only a blank or failed
         one. Raw events go in for a blank reply alone — logging a successful
         one's would build a transcript, and a request that died on the wire has
-        its exception instead. Never raises.
+        its exception instead. Full-response logging has a separate, explicitly
+        enabled JSONL file and never includes the submitted messages. Never
+        raises.
         """
         directory = log_dir()
-        if directory is None or not (self.verbose or self.empty or self.error):
+        if directory is None:
             return
-        lines = [f"stream: {self._summary()}"]
-        if self.empty and not self.error:
-            lines.append(f"stream: reply was empty; {len(self.raw)} raw event(s) follow")
-            lines += [f"stream|   {event}" for event in self.raw]
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         try:
-            with (directory / "chat-stream.log").open("a", encoding="utf-8") as fh:
-                for line in lines:
-                    fh.write(f"{stamp} {line}\n")
+            if self.verbose or self.empty or self.error:
+                lines = [f"stream: {self._summary()}"]
+                if self.empty and not self.error:
+                    lines.append(
+                        f"stream: reply was empty; {len(self.raw)} raw event(s) follow")
+                    lines += [f"stream|   {event}" for event in self.raw]
+                with (directory / "chat-stream.log").open(
+                        "a", encoding="utf-8") as fh:
+                    for line in lines:
+                        fh.write(f"{stamp} {line}\n")
+            if self.log_response:
+                record = {
+                    "timestamp": stamp,
+                    "content": "".join(self.content),
+                    "reasoning_content": "".join(self.reasoning_content),
+                    "finish_reason": self.finish_reason,
+                    "error": self.error,
+                }
+                with (directory / "chat-responses.jsonl").open(
+                        "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
         except OSError:
             pass
 
@@ -709,7 +733,7 @@ class LlamaServer:
             body["max_tokens"] = max_tokens
         finish_reason = None
         tally = (_StreamTally(max_tokens, self.reasoning, self.reasoning_budget,
-                              store.verbose_stream_log())
+                              store.verbose_stream_log(), store.full_response_log())
                  if log_dir() is not None else None)
         try:
             with requests.post(f"{self.base_url}/v1/chat/completions",
