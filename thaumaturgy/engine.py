@@ -430,6 +430,9 @@ class LlamaServer:
         # message gives the model a cue to wrap up. Pointless with no budget.
         if reasoning_budget > 0 and reasoning_budget_message:
             cmd += ["--reasoning-budget-message", reasoning_budget_message]
+        directory = log_dir()
+        if store.full_request_log() and directory is not None:
+            cmd += ["--log-prompts-dir", str(directory / "chat-prompts")]
         self.reasoning = reasoning
         self.reasoning_budget = reasoning_budget
         self.requested_ctx = ctx_size

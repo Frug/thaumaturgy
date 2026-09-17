@@ -276,6 +276,19 @@ def render() -> None:
                 .classes("text-sm")
             ui.label(en.STREAM_STATS_HELP).classes("text-xs text-muted leading-snug")
 
+            def set_full_request_log(value: bool) -> None:
+                store.save_full_request_log(value)
+                ui.notify("Prompt logging enabled for the next model load" if value
+                          else "Prompt logging disabled for the next model load",
+                          type="positive")
+
+            ui.switch("Log incoming model prompts",
+                      value=store.full_request_log(),
+                      on_change=lambda e: set_full_request_log(e.value)) \
+                .classes("text-sm")
+            ui.label(en.FULL_REQUEST_LOG_HELP).classes(
+                "text-xs text-muted leading-snug")
+
             def set_full_response_log(value: bool) -> None:
                 store.save_full_response_log(value)
                 ui.notify("Logging full model responses" if value

@@ -420,6 +420,20 @@ def save_full_response_log(on: bool) -> None:
     save_app_config(config)
 
 
+def full_request_log() -> bool:
+    """Whether llama.cpp writes each incoming rendered prompt to a text file."""
+    return bool(load_app_config().get("full_request_log"))
+
+
+def save_full_request_log(on: bool) -> None:
+    config = load_app_config()
+    if on:
+        config["full_request_log"] = True
+    else:
+        config.pop("full_request_log", None)
+    save_app_config(config)
+
+
 def compaction_divider() -> bool:
     """Whether the chat marks where its recap takes over. On unless turned off."""
     value = load_app_config().get("compaction_divider")

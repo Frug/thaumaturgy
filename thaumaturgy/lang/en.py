@@ -153,3 +153,10 @@ FULL_RESPONSE_LOG_HELP = (
     "Responses are stored as plain text, so enable this only in a private log "
     "directory. Off by default."
 )
+FULL_REQUEST_LOG_HELP = (
+    "Uses llama.cpp's native prompt logger to write the rendered text received "
+    "from every client, including clients connected directly to the model API, "
+    "to a separate file under chat-prompts. This may contain private plain text, "
+    "so enable it only in a private log directory. Takes effect on the next model "
+    "load. Off by default."
+)
