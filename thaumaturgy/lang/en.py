@@ -48,6 +48,7 @@ COMPACT_STILL_TOO_LONG = ("Still too long after compacting. Shorten the message 
 COMPACT_NOT_NEEDED = "This chat already fits; nothing to do."
 COMPACT_DIVIDER = "Context compacted — {covers} earlier messages summarized"
 NO_RECAP = "This chat hasn't been compacted, so there is no recap yet."
+LOADING_OLDER = "Loading earlier messages…"
 
 MAX_NEW_TOKENS_HELP = (
     "A ceiling on how long a reply may run, not a target — most stop well "
