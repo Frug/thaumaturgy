@@ -88,6 +88,10 @@ _HEAD_HTML = """
   /* Quoted dialogue in chat messages */
   .tg-quote { font-weight: 700; }
 
+  /* Skip layout and paint for messages scrolled out of view. `auto` makes the
+     browser remember a row's real height once it has been shown. */
+  .tg-msg { content-visibility: auto; contain-intrinsic-size: auto 250px; }
+
   /* Per-message actions: out of the way until the message is hovered */
   .tg-msg-actions { opacity: 0; transition: opacity 0.15s ease; }
   .tg-msg:hover .tg-msg-actions,
