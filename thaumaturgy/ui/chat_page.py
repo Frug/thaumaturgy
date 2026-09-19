@@ -31,6 +31,9 @@ _INITIAL_MESSAGES = 200
 _OLDER_BATCH = 100
 # How close to the top (px) the transcript gets before the next batch loads.
 _OLDER_THRESHOLD = 400
+# New messages grow the window from the bottom; past this it is cut back to
+# _INITIAL_MESSAGES, in steps so it isn't trimmed on every send.
+_MAX_MESSAGES = 300
 
 
 def _rel_time(ts: float | None) -> str:
@@ -374,6 +377,14 @@ async def render():
                 (summary.covers, summary.fingerprint) if summary else None,
                 store.compaction_divider())
 
+    def render_older_marker():
+        # Also what the scroll handler looks for to know there is more.
+        with ui.row().classes("w-full justify-center items-center gap-2 "
+                              "py-2 text-xs text-muted tg-older") as older:
+            ui.spinner(size="sm")
+            ui.label(en.LOADING_OLDER)
+        page["older"] = older
+
     def render_messages():
         msgs_col.clear()
         page.update(inner=None, stream_view=None, divider=None, older=None,
@@ -391,12 +402,7 @@ async def render():
             page["start"] = max(0, total - _INITIAL_MESSAGES)
             with inner:
                 if page["start"]:
-                    # Also what the scroll handler looks for to know there is more.
-                    with ui.row().classes("w-full justify-center items-center gap-2 "
-                                          "py-2 text-xs text-muted tg-older") as older:
-                        ui.spinner(size="sm")
-                        ui.label(en.LOADING_OLDER)
-                    page["older"] = older
+                    render_older_marker()
                 page["rows"] = render_range(page["start"], total)
         place_reply_actions()
 
@@ -450,8 +456,43 @@ async def render():
             for k, element in enumerate(children[before:]):
                 element.move(container, target_index=at + k)
             page["rows"] = old[:same] + made + old[len(old) - tail:]
+        follow = fresh[0] < fresh[1] and tail == 0
+        if follow:
+            trim_head()
         place_reply_actions()
-        return fresh[0] < fresh[1] and tail == 0
+        return follow
+
+    def trim_head():
+        """Cut a grown window back to the tail, like a freshly opened chat.
+
+        Only called when the view follows new messages to the bottom, so the
+        rows removed are never the ones being read.
+        """
+        rows, inner = page["rows"], page["inner"]
+        if len(rows) <= _MAX_MESSAGES:
+            return
+        cut = len(rows) - _INITIAL_MESSAGES
+        containers = set()
+        for shown in rows[:cut]:
+            containers.add(shown.view.row.parent_slot.parent)
+            shown.view.row.delete()
+        page["rows"] = rows[cut:]
+        page["start"] += cut
+        summary = chat.chat.active_summary()
+        divider = page["divider"]
+        if divider is not None and not divider.is_deleted \
+                and (summary is None or summary.covers < page["start"]):
+            containers.add(divider.parent_slot.parent)
+            divider.delete()
+            page["divider"] = None
+        # Batches loaded by scrolling up, now emptied.
+        for container in containers:
+            if container is not inner and not container.default_slot.children:
+                container.delete()
+        if page["older"] is None:
+            with inner:
+                render_older_marker()
+            page["older"].move(inner, target_index=0)
 
     def load_older(until: int | None = None):
         """Render the next batch above what is shown, or back to `until`."""
