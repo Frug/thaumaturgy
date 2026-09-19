@@ -5,6 +5,7 @@ reply in flight; this module draws it and collects input.
 """
 
 import asyncio
+import copy
 import re
 import time
 
@@ -175,6 +176,18 @@ class _MessageView:
         self.reasoning_box.set_visibility(bool(reasoning.strip()))
 
 
+class _Shown:
+    """A rendered message and a copy of what it said when it was rendered."""
+
+    def __init__(self, message: Message, view: _MessageView):
+        self.message = message
+        self.snap = copy.copy(message)
+        self.view = view
+
+    def current(self, message: Message) -> bool:
+        return self.message is message and self.snap == message
+
+
 def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
              streaming: bool = False) -> _MessageView:
     """Render one message row; returns handles to it (for live updates)."""
@@ -250,7 +263,8 @@ async def render():
     else:
         chat.open_first(chat.scenario_name)
     page: dict = {"inner": None, "stream_view": None, "observed": None,
-                  "fold_anchor": None, "older": None, "start": 0,
+                  "divider": None, "older": None, "start": 0, "rows": [],
+                  "reply_actions": None, "reply_for": None, "key": None,
                   "refresh_context": lambda: None}
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
@@ -296,49 +310,75 @@ async def render():
 
     # ── Transcript ───────────────────────────────────────────────────────────
     def render_reply_actions():
-        with ui.row().classes("w-full gap-2 no-wrap items-start pb-2"):
+        with ui.row().classes("w-full gap-2 no-wrap items-start pb-2") as actions:
             ui.element("div").classes("w-16 shrink-0")
             ui.button("Regenerate", icon="refresh", on_click=regenerate_last) \
                 .props("flat dense color=secondary").classes("text-xs")
+        return actions
 
-    def render_range(lo: int, hi: int):
+    def index_of(message: Message) -> int:
+        """Where a rendered message sits now; rows outlive deletes above them."""
+        messages = chat.chat.messages if chat.chat else []
+        return next((i for i, m in enumerate(messages) if m is message), -1)
+
+    def render_range(lo: int, hi: int) -> list[_Shown]:
         """Render messages lo..hi-1 into the current container."""
         run_ = chat.run
         streaming = chat.busy()
-        regenerate_index = (None if streaming
-                            else chat.chat.latest_assistant_index())
         summary = chat.chat.active_summary()
-        fold_at = summary.covers if summary is not None else None
-        divider_at = (fold_at if fold_at is not None
+        divider_at = (summary.covers if summary is not None
                       and store.compaction_divider() else None)
+        shown = []
         for i in range(lo, hi):
             m = chat.chat.messages[i]
-            if i == divider_at:
-                page["fold_anchor"] = _compaction_divider(summary)
+            if i == divider_at and (page["divider"] is None
+                                    or page["divider"].is_deleted):
+                page["divider"] = _compaction_divider(summary)
             live = streaming and run_ is not None and i == run_.index
             # Built even mid-reply, when the service refuses them: the
             # bubble's slot is closed by the time the reply lands, so a
             # row added afterwards would cost a whole re-render.
             view = _message(
                 m, on_scenario_click=open_scenario, streaming=live,
-                on_edit=lambda idx=i: ask_edit_message(idx),
-                on_delete=lambda idx=i: ask_delete_message(idx))
-            # With the divider hidden the first unfolded message is the
-            # boundary, so the jump works either way.
-            if i == fold_at and page["fold_anchor"] is None:
-                page["fold_anchor"] = view.row
+                on_edit=lambda m=m: ask_edit_message(index_of(m)),
+                on_delete=lambda m=m: ask_delete_message(index_of(m)))
             if live:
                 page["stream_view"] = view
-            if i == regenerate_index:
-                render_reply_actions()
+            shown.append(_Shown(m, view))
+        return shown
+
+    def place_reply_actions():
+        """Hang Regenerate under the latest reply, and only there."""
+        index = None if chat.busy() else chat.chat.latest_assistant_index()
+        target = (page["rows"][index - page["start"]]
+                  if index is not None and index >= page["start"] else None)
+        actions = page["reply_actions"]
+        if actions is not None and not actions.is_deleted:
+            if target is not None and page["reply_for"] is target:
+                return
+            actions.delete()
+        page["reply_actions"] = page["reply_for"] = None
+        if target is None:
+            return
+        row = target.view.row
+        container = row.parent_slot.parent
+        with container:
+            actions = render_reply_actions()
+        actions.move(container, container.default_slot.children.index(row) + 1)
+        page["reply_actions"], page["reply_for"] = actions, target
+
+    def transcript_key():
+        """What a rendered transcript can't be patched across."""
+        summary = chat.chat.active_summary() if chat.chat else None
+        return (chat.chat.id if chat.chat else None,
+                (summary.covers, summary.fingerprint) if summary else None,
+                store.compaction_divider())
 
     def render_messages():
         msgs_col.clear()
-        page["inner"] = None
-        page["stream_view"] = None
-        page["fold_anchor"] = None
-        page["older"] = None
-        page["start"] = 0
+        page.update(inner=None, stream_view=None, divider=None, older=None,
+                    start=0, rows=[], reply_actions=None, reply_for=None,
+                    key=transcript_key())
         with msgs_col:
             if chat.chat is None:
                 with ui.column().classes("w-full h-full items-center justify-center gap-2"):
@@ -357,7 +397,61 @@ async def render():
                         ui.spinner(size="sm")
                         ui.label(en.LOADING_OLDER)
                     page["older"] = older
-                render_range(page["start"], total)
+                page["rows"] = render_range(page["start"], total)
+        place_reply_actions()
+
+    def sync_transcript() -> bool:
+        """Bring the transcript up to date, rebuilding only the rows that changed.
+
+        Returns whether the end of the chat changed, i.e. whether to follow it.
+        """
+        inner, start = page["inner"], page["start"]
+        messages = chat.chat.messages if chat.chat else []
+        # A new chat or recap moves everything, and a shorter chat than the
+        # window can't be lined up with it.
+        if (inner is None or inner.is_deleted or transcript_key() != page["key"]
+                or len(messages) < start):
+            render_messages()
+            return True
+        old, new = page["rows"], messages[start:]
+        same = 0
+        while same < min(len(old), len(new)) and old[same].current(new[same]):
+            same += 1
+        tail = 0
+        while tail < min(len(old), len(new)) - same \
+                and old[-1 - tail].current(new[-1 - tail]):
+            tail += 1
+        stale = old[same:len(old) - tail]
+        fresh = (start + same, start + len(new) - tail)
+        if stale or fresh[0] < fresh[1]:
+            # The actions row would otherwise be the neighbour rows land next to.
+            if page["reply_actions"] is not None:
+                page["reply_actions"].delete()
+                page["reply_actions"] = page["reply_for"] = None
+            if stale:
+                anchor, after = stale[0].view.row, 0
+            elif same:
+                anchor, after = old[same - 1].view.row, 1
+            elif tail:
+                anchor, after = old[len(old) - tail].view.row, 0
+            else:
+                anchor = None
+            if anchor is None:
+                container, at = inner, len(inner.default_slot.children)
+            else:
+                container = anchor.parent_slot.parent
+                at = container.default_slot.children.index(anchor) + after
+            for shown in stale:
+                shown.view.row.delete()
+            children = container.default_slot.children
+            before = len(children)
+            with container:
+                made = render_range(*fresh)
+            for k, element in enumerate(children[before:]):
+                element.move(container, target_index=at + k)
+            page["rows"] = old[:same] + made + old[len(old) - tail:]
+        place_reply_actions()
+        return fresh[0] < fresh[1] and tail == 0
 
     def load_older(until: int | None = None):
         """Render the next batch above what is shown, or back to `until`."""
@@ -370,7 +464,7 @@ async def render():
                 batch = ui.column().classes("w-full gap-2")
             batch.move(inner, target_index=1)  # just below the marker
             with batch:
-                render_range(lo, start)
+                page["rows"] = render_range(lo, start) + page["rows"]
             page["start"] = lo
             if lo == 0:
                 page["older"].delete()
@@ -429,11 +523,13 @@ async def render():
             if view is not None and not view.is_deleted:
                 text, reasoning = message.display()
                 view.update(text or _NO_OUTPUT, reasoning)
-            if message.warning():
-                render_messages()  # re-render to hang the warning badge off the bubble
-            elif chat.chat.latest_assistant_index() == run_.index:
-                with page["inner"]:
-                    render_reply_actions()
+                if not message.warning():
+                    # Already up to date in place; only a warning badge needs
+                    # the row rebuilt.
+                    for shown in page["rows"]:
+                        if shown.message is message:
+                            shown.snap = copy.copy(message)
+            sync_transcript()
             # Waits, where the scrolls during the stream don't: the text of this
             # last frame reaches the browser just after the command to scroll
             # past it, and there is no next frame to make up the difference.
@@ -465,12 +561,13 @@ async def render():
         else:
             tab["chat_id"] = chat.chat.id
             user["chat_id"] = chat.chat.id
-        render_messages()
+        follow = sync_transcript()
         chat_list.refresh()
         watch()
         sync_recap_controls()
         page["refresh_context"]()
-        asyncio.create_task(scroll_bottom_after_render())
+        if follow:
+            asyncio.create_task(scroll_bottom_after_render())
 
     def apply(outcome):
         notify(outcome)
@@ -729,8 +826,12 @@ async def render():
         if summary is not None and summary.covers < page["start"]:
             load_older(until=summary.covers)
             await asyncio.sleep(0.05)  # let the browser lay the batch out first
-        anchor = page["fold_anchor"]
+        anchor = page["divider"]
         if anchor is None or anchor.is_deleted:
+            # With the divider hidden the first unfolded message is the boundary.
+            k = summary.covers - page["start"] if summary is not None else -1
+            anchor = page["rows"][k].view.row if 0 <= k < len(page["rows"]) else None
+        if anchor is None:
             ui.notify(en.NO_RECAP)
             return
         ui.run_javascript(
