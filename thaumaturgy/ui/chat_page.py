@@ -5,6 +5,7 @@ reply in flight; this module draws it and collects input.
 """
 
 import asyncio
+import copy
 import re
 import time
 
@@ -23,6 +24,16 @@ _STREAM_MAX_INTERVAL = 0.4
 # Stands in for a reply that finished with nothing in it, so the bubble isn't
 # just blank.
 _NO_OUTPUT = "_(no output)_"
+
+# A long transcript is slow for the browser to lay out, so only the tail is
+# rendered up front and earlier messages load in batches on scrolling up.
+_INITIAL_MESSAGES = 200
+_OLDER_BATCH = 100
+# How close to the top (px) the transcript gets before the next batch loads.
+_OLDER_THRESHOLD = 400
+# New messages grow the window from the bottom; past this it is cut back to
+# _INITIAL_MESSAGES, in steps so it isn't trimmed on every send.
+_MAX_MESSAGES = 300
 
 
 def _rel_time(ts: float | None) -> str:
@@ -168,6 +179,18 @@ class _MessageView:
         self.reasoning_box.set_visibility(bool(reasoning.strip()))
 
 
+class _Shown:
+    """A rendered message and a copy of what it said when it was rendered."""
+
+    def __init__(self, message: Message, view: _MessageView):
+        self.message = message
+        self.snap = copy.copy(message)
+        self.view = view
+
+    def current(self, message: Message) -> bool:
+        return self.message is message and self.snap == message
+
+
 def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
              streaming: bool = False) -> _MessageView:
     """Render one message row; returns handles to it (for live updates)."""
@@ -243,7 +266,9 @@ async def render():
     else:
         chat.open_first(chat.scenario_name)
     page: dict = {"inner": None, "stream_view": None, "observed": None,
-                  "fold_anchor": None, "refresh_context": lambda: None}
+                  "divider": None, "older": None, "start": 0, "rows": [],
+                  "reply_actions": None, "reply_for": None, "key": None,
+                  "refresh_context": lambda: None}
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
@@ -288,16 +313,83 @@ async def render():
 
     # ── Transcript ───────────────────────────────────────────────────────────
     def render_reply_actions():
-        with ui.row().classes("w-full gap-2 no-wrap items-start pb-2"):
+        with ui.row().classes("w-full gap-2 no-wrap items-start pb-2") as actions:
             ui.element("div").classes("w-16 shrink-0")
             ui.button("Regenerate", icon="refresh", on_click=regenerate_last) \
                 .props("flat dense color=secondary").classes("text-xs")
+        return actions
+
+    def index_of(message: Message) -> int:
+        """Where a rendered message sits now; rows outlive deletes above them."""
+        messages = chat.chat.messages if chat.chat else []
+        return next((i for i, m in enumerate(messages) if m is message), -1)
+
+    def render_range(lo: int, hi: int) -> list[_Shown]:
+        """Render messages lo..hi-1 into the current container."""
+        run_ = chat.run
+        streaming = chat.busy()
+        summary = chat.chat.active_summary()
+        divider_at = (summary.covers if summary is not None
+                      and store.compaction_divider() else None)
+        shown = []
+        for i in range(lo, hi):
+            m = chat.chat.messages[i]
+            if i == divider_at and (page["divider"] is None
+                                    or page["divider"].is_deleted):
+                page["divider"] = _compaction_divider(summary)
+            live = streaming and run_ is not None and i == run_.index
+            # Built even mid-reply, when the service refuses them: the
+            # bubble's slot is closed by the time the reply lands, so a
+            # row added afterwards would cost a whole re-render.
+            view = _message(
+                m, on_scenario_click=open_scenario, streaming=live,
+                on_edit=lambda m=m: ask_edit_message(index_of(m)),
+                on_delete=lambda m=m: ask_delete_message(index_of(m)))
+            if live:
+                page["stream_view"] = view
+            shown.append(_Shown(m, view))
+        return shown
+
+    def place_reply_actions():
+        """Hang Regenerate under the latest reply, and only there."""
+        index = None if chat.busy() else chat.chat.latest_assistant_index()
+        target = (page["rows"][index - page["start"]]
+                  if index is not None and index >= page["start"] else None)
+        actions = page["reply_actions"]
+        if actions is not None and not actions.is_deleted:
+            if target is not None and page["reply_for"] is target:
+                return
+            actions.delete()
+        page["reply_actions"] = page["reply_for"] = None
+        if target is None:
+            return
+        row = target.view.row
+        container = row.parent_slot.parent
+        with container:
+            actions = render_reply_actions()
+        actions.move(container, container.default_slot.children.index(row) + 1)
+        page["reply_actions"], page["reply_for"] = actions, target
+
+    def transcript_key():
+        """What a rendered transcript can't be patched across."""
+        summary = chat.chat.active_summary() if chat.chat else None
+        return (chat.chat.id if chat.chat else None,
+                (summary.covers, summary.fingerprint) if summary else None,
+                store.compaction_divider())
+
+    def render_older_marker():
+        # Also what the scroll handler looks for to know there is more.
+        with ui.row().classes("w-full justify-center items-center gap-2 "
+                              "py-2 text-xs text-muted tg-older") as older:
+            ui.spinner(size="sm")
+            ui.label(en.LOADING_OLDER)
+        page["older"] = older
 
     def render_messages():
         msgs_col.clear()
-        page["inner"] = None
-        page["stream_view"] = None
-        page["fold_anchor"] = None
+        page.update(inner=None, stream_view=None, divider=None, older=None,
+                    start=0, rows=[], reply_actions=None, reply_for=None,
+                    key=transcript_key())
         with msgs_col:
             if chat.chat is None:
                 with ui.column().classes("w-full h-full items-center justify-center gap-2"):
@@ -306,34 +398,122 @@ async def render():
                 return
             inner = ui.column().classes("w-full max-w-3xl mx-auto gap-2")
             page["inner"] = inner
+            total = len(chat.chat.messages)
+            page["start"] = max(0, total - _INITIAL_MESSAGES)
             with inner:
-                run_ = chat.run
-                streaming = chat.busy()
-                regenerate_index = (None if streaming
-                                    else chat.chat.latest_assistant_index())
-                summary = chat.chat.active_summary()
-                fold_at = summary.covers if summary is not None else None
-                divider_at = (fold_at if fold_at is not None
-                              and store.compaction_divider() else None)
-                for i, m in enumerate(chat.chat.messages):
-                    if i == divider_at:
-                        page["fold_anchor"] = _compaction_divider(summary)
-                    live = streaming and run_ is not None and i == run_.index
-                    # Built even mid-reply, when the service refuses them: the
-                    # bubble's slot is closed by the time the reply lands, so a
-                    # row added afterwards would cost a whole re-render.
-                    view = _message(
-                        m, on_scenario_click=open_scenario, streaming=live,
-                        on_edit=lambda idx=i: ask_edit_message(idx),
-                        on_delete=lambda idx=i: ask_delete_message(idx))
-                    # With the divider hidden the first unfolded message is the
-                    # boundary, so the jump works either way.
-                    if i == fold_at and page["fold_anchor"] is None:
-                        page["fold_anchor"] = view.row
-                    if live:
-                        page["stream_view"] = view
-                    if i == regenerate_index:
-                        render_reply_actions()
+                if page["start"]:
+                    render_older_marker()
+                page["rows"] = render_range(page["start"], total)
+        place_reply_actions()
+
+    def sync_transcript() -> bool:
+        """Bring the transcript up to date, rebuilding only the rows that changed.
+
+        Returns whether the end of the chat changed, i.e. whether to follow it.
+        """
+        inner, start = page["inner"], page["start"]
+        messages = chat.chat.messages if chat.chat else []
+        # A new chat or recap moves everything, and a shorter chat than the
+        # window can't be lined up with it.
+        if (inner is None or inner.is_deleted or transcript_key() != page["key"]
+                or len(messages) < start):
+            render_messages()
+            return True
+        old, new = page["rows"], messages[start:]
+        same = 0
+        while same < min(len(old), len(new)) and old[same].current(new[same]):
+            same += 1
+        tail = 0
+        while tail < min(len(old), len(new)) - same \
+                and old[-1 - tail].current(new[-1 - tail]):
+            tail += 1
+        stale = old[same:len(old) - tail]
+        fresh = (start + same, start + len(new) - tail)
+        if stale or fresh[0] < fresh[1]:
+            # The actions row would otherwise be the neighbour rows land next to.
+            if page["reply_actions"] is not None:
+                page["reply_actions"].delete()
+                page["reply_actions"] = page["reply_for"] = None
+            if stale:
+                anchor, after = stale[0].view.row, 0
+            elif same:
+                anchor, after = old[same - 1].view.row, 1
+            elif tail:
+                anchor, after = old[len(old) - tail].view.row, 0
+            else:
+                anchor = None
+            if anchor is None:
+                container, at = inner, len(inner.default_slot.children)
+            else:
+                container = anchor.parent_slot.parent
+                at = container.default_slot.children.index(anchor) + after
+            for shown in stale:
+                shown.view.row.delete()
+            children = container.default_slot.children
+            before = len(children)
+            with container:
+                made = render_range(*fresh)
+            for k, element in enumerate(children[before:]):
+                element.move(container, target_index=at + k)
+            page["rows"] = old[:same] + made + old[len(old) - tail:]
+        follow = fresh[0] < fresh[1] and tail == 0
+        if follow:
+            trim_head()
+        place_reply_actions()
+        return follow
+
+    def trim_head():
+        """Cut a grown window back to the tail, like a freshly opened chat.
+
+        Only called when the view follows new messages to the bottom, so the
+        rows removed are never the ones being read.
+        """
+        rows, inner = page["rows"], page["inner"]
+        if len(rows) <= _MAX_MESSAGES:
+            return
+        cut = len(rows) - _INITIAL_MESSAGES
+        containers = set()
+        for shown in rows[:cut]:
+            containers.add(shown.view.row.parent_slot.parent)
+            shown.view.row.delete()
+        page["rows"] = rows[cut:]
+        page["start"] += cut
+        summary = chat.chat.active_summary()
+        divider = page["divider"]
+        if divider is not None and not divider.is_deleted \
+                and (summary is None or summary.covers < page["start"]):
+            containers.add(divider.parent_slot.parent)
+            divider.delete()
+            page["divider"] = None
+        # Batches loaded by scrolling up, now emptied.
+        for container in containers:
+            if container is not inner and not container.default_slot.children:
+                container.delete()
+        if page["older"] is None:
+            with inner:
+                render_older_marker()
+            page["older"].move(inner, target_index=0)
+
+    def load_older(until: int | None = None):
+        """Render the next batch above what is shown, or back to `until`."""
+        start, inner = page["start"], page["inner"]
+        if start and inner is not None and not inner.is_deleted:
+            lo = max(0, start - _OLDER_BATCH)
+            if until is not None:
+                lo = min(lo, until)
+            with inner:
+                batch = ui.column().classes("w-full gap-2")
+            batch.move(inner, target_index=1)  # just below the marker
+            with batch:
+                page["rows"] = render_range(lo, start) + page["rows"]
+            page["start"] = lo
+            if lo == 0:
+                page["older"].delete()
+                page["older"] = None
+        # Let go of the scroll position the browser held while the batch landed.
+        ui.run_javascript(
+            f'setTimeout(() => {{ const r = document.getElementById("{transcript_scroll.html_id}");'
+            ' if (r) { r._tgHold?.disconnect(); delete r.dataset.tgLoading; } }, 300)')
 
     def scroll_bottom():
         transcript_scroll.scroll_to(percent=1.0)
@@ -384,11 +564,13 @@ async def render():
             if view is not None and not view.is_deleted:
                 text, reasoning = message.display()
                 view.update(text or _NO_OUTPUT, reasoning)
-            if message.warning():
-                render_messages()  # re-render to hang the warning badge off the bubble
-            elif chat.chat.latest_assistant_index() == run_.index:
-                with page["inner"]:
-                    render_reply_actions()
+                if not message.warning():
+                    # Already up to date in place; only a warning badge needs
+                    # the row rebuilt.
+                    for shown in page["rows"]:
+                        if shown.message is message:
+                            shown.snap = copy.copy(message)
+            sync_transcript()
             # Waits, where the scrolls during the stream don't: the text of this
             # last frame reaches the browser just after the command to scroll
             # past it, and there is no next frame to make up the difference.
@@ -420,12 +602,13 @@ async def render():
         else:
             tab["chat_id"] = chat.chat.id
             user["chat_id"] = chat.chat.id
-        render_messages()
+        follow = sync_transcript()
         chat_list.refresh()
         watch()
         sync_recap_controls()
         page["refresh_context"]()
-        asyncio.create_task(scroll_bottom_after_render())
+        if follow:
+            asyncio.create_task(scroll_bottom_after_render())
 
     def apply(outcome):
         notify(outcome)
@@ -678,15 +861,29 @@ async def render():
         recap_body.content = _message_md(summary.text)
         recap_dialog.open()
 
-    def jump_to_fold():
+    async def jump_to_fold():
         """Scroll the transcript to where the recap hands over to real messages."""
-        anchor = page["fold_anchor"]
+        summary = chat.chat.active_summary() if chat.chat else None
+        if summary is not None and summary.covers < page["start"]:
+            # With a batch to spare, so landing on the fold doesn't set off
+            # another load right away.
+            load_older(until=max(0, summary.covers - _OLDER_BATCH))
+            await asyncio.sleep(0.05)  # let the browser lay the batch out first
+        anchor = page["divider"]
         if anchor is None or anchor.is_deleted:
+            # With the divider hidden the first unfolded message is the boundary.
+            k = summary.covers - page["start"] if summary is not None else -1
+            anchor = page["rows"][k].view.row if 0 <= k < len(page["rows"]) else None
+        if anchor is None:
             ui.notify(en.NO_RECAP)
             return
-        ui.run_javascript(
-            f'document.getElementById("{anchor.html_id}")'
-            '?.scrollIntoView({behavior: "smooth", block: "center"})')
+        # Rows not yet shown have estimated heights until they come into view,
+        # so land once, then again after the rows around the fold are measured.
+        ui.run_javascript(f"""
+            const el = document.getElementById("{anchor.html_id}");
+            el?.scrollIntoView({{block: "center"}});
+            requestAnimationFrame(() => requestAnimationFrame(
+                () => el?.scrollIntoView({{block: "center"}})));""")
 
     def sync_recap_controls():
         """Only offered when a recap is actually standing in for something."""
@@ -794,6 +991,27 @@ async def render():
         with ui.column().classes("h-full flex-1 min-w-0 no-wrap gap-2"):
             with ui.scroll_area().classes("flex-1 w-full") as transcript_scroll:
                 msgs_col = ui.column().classes("w-full")
+            # Decided in the browser so it can pin the first visible message
+            # before the batch lands; otherwise the view jumps by its height.
+            # Only on scrolling up: Quasar also reports position 0 while a fresh
+            # transcript is laid out, before it has been scrolled to the bottom.
+            transcript_scroll.on("scroll", lambda: load_older(), js_handler=f"""(info) => {{
+                const root = document.getElementById("{transcript_scroll.html_id}");
+                const rising = info.verticalPosition < (root?._tgLast ?? 0);
+                if (root) root._tgLast = info.verticalPosition;
+                if (!rising || info.verticalPosition > {_OLDER_THRESHOLD}) return;
+                const marker = root?.querySelector(".tg-older");
+                const anchor = marker?.nextElementSibling;
+                if (!anchor || root.dataset.tgLoading) return;
+                root.dataset.tgLoading = "1";
+                const box = root.querySelector(".q-scrollarea__container");
+                const top = anchor.getBoundingClientRect().top;
+                root._tgHold = new ResizeObserver(() => {{
+                    box.scrollTop += anchor.getBoundingClientRect().top - top;
+                }});
+                root._tgHold.observe(root.querySelector(".q-scrollarea__content"));
+                emit();
+            }}""")
             with ui.row().classes("w-full max-w-3xl mx-auto items-end gap-2 no-wrap"):
                 input_box = ui.textarea() \
                     .props("filled autogrow input-style=max-height:40vh") \
