@@ -865,7 +865,9 @@ async def render():
         """Scroll the transcript to where the recap hands over to real messages."""
         summary = chat.chat.active_summary() if chat.chat else None
         if summary is not None and summary.covers < page["start"]:
-            load_older(until=summary.covers)
+            # With a batch to spare, so landing on the fold doesn't set off
+            # another load right away.
+            load_older(until=max(0, summary.covers - _OLDER_BATCH))
             await asyncio.sleep(0.05)  # let the browser lay the batch out first
         anchor = page["divider"]
         if anchor is None or anchor.is_deleted:
@@ -875,9 +877,13 @@ async def render():
         if anchor is None:
             ui.notify(en.NO_RECAP)
             return
-        ui.run_javascript(
-            f'document.getElementById("{anchor.html_id}")'
-            '?.scrollIntoView({behavior: "smooth", block: "center"})')
+        # Rows not yet shown have estimated heights until they come into view,
+        # so land once, then again after the rows around the fold are measured.
+        ui.run_javascript(f"""
+            const el = document.getElementById("{anchor.html_id}");
+            el?.scrollIntoView({{block: "center"}});
+            requestAnimationFrame(() => requestAnimationFrame(
+                () => el?.scrollIntoView({{block: "center"}})));""")
 
     def sync_recap_controls():
         """Only offered when a recap is actually standing in for something."""
