@@ -8,9 +8,9 @@ the detected max context comes from the GGUF metadata.
 
 from nicegui import app, context, run, ui
 
-from thaumaturgy import appstate, engine, hf_download, sillytavern, store
+from thaumaturgy import appstate, engine, hf_download, store
 from thaumaturgy.lang import en
-from thaumaturgy.ui import outcomes
+from thaumaturgy.ui import outcomes, preset_import
 
 CACHE_TYPES = ["fp16", "q8_0", "q4_0"]
 CHAT_TEMPLATES = {
@@ -836,53 +836,14 @@ async def render():
             i += 1
         add_set(f"Set {i}", dict(PRESETS[DEFAULT_PRESET]))
 
-    def add_imported(imported: sillytavern.ImportedPreset):
-        if not import_dialog.value:
-            return  # Cancelled while the fetch ran.
-        name, i = imported.name, 2
+    def add_unique_set(name: str, values: dict) -> str:
+        """Add a set, suffixing the name if it's taken; returns the name used."""
+        base, i = name, 2
         while name in sets:
-            name = f"{imported.name} ({i})"
+            name = f"{base} ({i})"
             i += 1
-        import_dialog.close()
-        add_set(name, imported.values)
-        msg = f"Imported '{name}'."
-        if imported.clamped:
-            msg += " Clamped to the slider range: " + ", ".join(imported.clamped) + "."
-        if imported.skipped:
-            msg += " Not carried over: " + ", ".join(imported.skipped) + "."
-        ui.notify(msg, type="positive", multi_line=True, timeout=10000)
-
-    async def import_from_url():
-        url = (import_url.value or "").strip()
-        # Enter in the field bypasses the disabled button.
-        if not url or not import_fetch.enabled:
-            return
-        import_fetch.disable()
-        try:
-            imported = await run.io_bound(sillytavern.fetch, url)
-        except Exception as exc:  # noqa: BLE001
-            ui.notify(f"Could not import: {exc}", type="negative")
-            return
-        finally:
-            import_fetch.enable()
-        add_imported(imported)
-
-    async def import_upload(e):
-        # Broad catch: NiceGUI reports an upload handler's exception as success.
-        try:
-            imported = sillytavern.parse_text(await e.file.read(),
-                                              sillytavern.stem_name(e.file.name))
-        except Exception as exc:  # noqa: BLE001
-            ui.notify(f"Could not import {e.file.name}: {exc}", type="negative")
-            # max-files counts the failed file, which would block a retry.
-            import_upload_box.reset()
-            return
-        add_imported(imported)
-
-    def ask_import():
-        import_url.value = ""
-        import_upload_box.reset()
-        import_dialog.open()
+        add_set(name, values)
+        return name
 
     def save_as_template(name: str):
         """Save the selected model's current settings under a template name.
@@ -972,27 +933,7 @@ async def render():
                                         save_as_template(template_name.value))) \
                 .props("color=positive unelevated")
 
-    with ui.dialog() as import_dialog, ui.card().classes("p-5 gap-3") \
-            .style("width:480px;max-width:92vw"):
-        ui.label("Import SillyTavern preset").classes("text-lg font-semibold")
-        ui.label("Temperature, top-p, top-k, min-p, repetition penalty and "
-                 "response length become a new parameter set. Other samplers, "
-                 "templates and prompts are not imported.") \
-            .classes("text-xs text-muted leading-snug")
-        with ui.row().classes("w-full gap-2 items-center no-wrap"):
-            import_url = ui.input(label="Link to a .json preset") \
-                .props("filled dense").classes("flex-1 tg-field") \
-                .on("keydown.enter", import_from_url)
-            import_fetch = ui.button("Fetch", icon="download", on_click=import_from_url) \
-                .props("color=positive unelevated")
-        import_upload_box = ui.upload(
-            on_upload=import_upload, auto_upload=True, multiple=False, max_files=1,
-            max_file_size=sillytavern.MAX_BYTES, label="Or upload a .json file",
-            on_rejected=lambda _: ui.notify(
-                "Not accepted: one .json file under 2 MB at a time.", type="warning")) \
-            .props("flat bordered accept=.json").classes("w-full tg-field")
-        with ui.row().classes("w-full justify-end"):
-            ui.button("Cancel", on_click=import_dialog.close).props("flat")
+    ask_import = preset_import.build(add_unique_set)
 
     with ui.dialog() as confirm_dialog, ui.card().classes("p-5 gap-3"):
         confirm_label = ui.label().classes("text-sm")
