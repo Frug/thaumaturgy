@@ -10,7 +10,7 @@ from nicegui import app, context, run, ui
 
 from thaumaturgy import appstate, engine, hf_download, store
 from thaumaturgy.lang import en
-from thaumaturgy.ui import outcomes
+from thaumaturgy.ui import outcomes, preset_import
 
 CACHE_TYPES = ["fp16", "q8_0", "q4_0"]
 CHAT_TEMPLATES = {
@@ -68,15 +68,17 @@ DEFAULT_RUNTIME_TEMPLATE = store.DEFAULT_RUNTIME_TEMPLATE
 FALLBACK_MAX_GPU_LAYERS = 100
 
 # (key, label, min, max, step, decimals, help)
+_R = store.PARAM_RANGES
 PARAMS = [
-    ("max_new_tokens", "Max new tokens", 1, 4096, 1, 0, en.MAX_NEW_TOKENS_HELP),
-    ("temperature", "Temperature", 0.0, 2.0, 0.01, 2, en.TEMPERATURE_HELP),
-    ("top_p", "Top-p", 0.0, 1.0, 0.01, 2, en.TOP_P_HELP),
-    ("top_k", "Top-k", 0, 200, 1, 0, en.TOP_K_HELP),
-    ("min_p", "Min-p", 0.0, 1.0, 0.01, 2, en.MIN_P_HELP),
-    ("repetition_penalty", "Repetition penalty", 1.0, 1.5, 0.01, 2,
+    ("max_new_tokens", "Max new tokens", *_R["max_new_tokens"], 1, 0,
+     en.MAX_NEW_TOKENS_HELP),
+    ("temperature", "Temperature", *_R["temperature"], 0.01, 2, en.TEMPERATURE_HELP),
+    ("top_p", "Top-p", *_R["top_p"], 0.01, 2, en.TOP_P_HELP),
+    ("top_k", "Top-k", *_R["top_k"], 1, 0, en.TOP_K_HELP),
+    ("min_p", "Min-p", *_R["min_p"], 0.01, 2, en.MIN_P_HELP),
+    ("repetition_penalty", "Repetition penalty", *_R["repetition_penalty"], 0.01, 2,
      en.REPETITION_PENALTY_HELP),
-    ("recap_tokens", "Recap budget", 256, 8192, 64, 0, en.RECAP_BUDGET_HELP),
+    ("recap_tokens", "Recap budget", *_R["recap_tokens"], 64, 0, en.RECAP_BUDGET_HELP),
 ]
 
 
@@ -822,15 +824,26 @@ async def render():
         state["template"] = name
         sets_panel.refresh()
 
+    def add_set(name: str, values: dict):
+        sets[name] = values
+        order.append(name)
+        persist_params()
+        select_set(name)
+
     def new_set():
         i = 1
         while f"Set {i}" in sets:
             i += 1
-        name = f"Set {i}"
-        sets[name] = dict(PRESETS[DEFAULT_PRESET])
-        order.append(name)
-        persist_params()
-        select_set(name)
+        add_set(f"Set {i}", dict(PRESETS[DEFAULT_PRESET]))
+
+    def add_unique_set(name: str, values: dict) -> str:
+        """Add a set, suffixing the name if it's taken; returns the name used."""
+        base, i = name, 2
+        while name in sets:
+            name = f"{base} ({i})"
+            i += 1
+        add_set(name, values)
+        return name
 
     def save_as_template(name: str):
         """Save the selected model's current settings under a template name.
@@ -919,6 +932,8 @@ async def render():
                       on_click=lambda: (template_dialog.close(),
                                         save_as_template(template_name.value))) \
                 .props("color=positive unelevated")
+
+    ask_import = preset_import.build(add_unique_set)
 
     with ui.dialog() as confirm_dialog, ui.card().classes("p-5 gap-3"):
         confirm_label = ui.label().classes("text-sm")
@@ -1216,6 +1231,10 @@ async def render():
                 ui.button("Save as template" if runtime_mode else "New", icon="add",
                           on_click=ask_save_template if runtime_mode else new_set) \
                     .props("color=positive unelevated").classes("flex-1")
+                if not runtime_mode:
+                    ui.button(icon="upload_file", on_click=ask_import) \
+                        .props("color=primary unelevated") \
+                        .tooltip("Import a SillyTavern preset")
                 ui.button(icon="delete", on_click=ask_delete) \
                     .props("color=negative unelevated").tooltip("Delete selected")
             with ui.element("div").classes("w-full tg-list-shell"):

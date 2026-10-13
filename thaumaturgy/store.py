@@ -735,6 +735,16 @@ BUILTIN_PRESETS = {
     "Deterministic": dict(max_new_tokens=512, temperature=0.00, top_p=1.00, top_k=1, min_p=0.00, repetition_penalty=1.00, recap_tokens=4000),
 }
 DEFAULT_PRESET = "Default"
+# Bounds of each parameter, shared by the Model page sliders and imports.
+PARAM_RANGES = {
+    "max_new_tokens": (1, 4096),
+    "temperature": (0.0, 2.0),
+    "top_p": (0.0, 1.0),
+    "top_k": (0, 200),
+    "min_p": (0.0, 1.0),
+    "repetition_penalty": (1.0, 1.5),
+    "recap_tokens": (256, 8192),
+}
 CUSTOM = "Custom"
 
 

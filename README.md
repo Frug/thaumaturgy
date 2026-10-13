@@ -93,6 +93,17 @@ a chat starts, and the line it opened with then belongs to that chat. Only the
 scenario's own text is substituted — nothing rewrites what has been said in the
 transcript.
 
+## SillyTavern Presets
+
+The import button beside **New** in the parameter-set editor turns a
+SillyTavern preset into a new parameter set, from a link (Hugging Face and
+GitHub page links work) or an uploaded `.json`. It reads text-completion and
+chat-completion presets and master exports. Temperature, top-p, top-k, min-p,
+repetition penalty and response length are imported, clamped to the slider
+ranges; the notification lists anything clamped and anything else the preset
+sets that Thaumaturgy doesn't carry over (instruct and context templates,
+system prompt, DRY, logit bias, …).
+
 ## Long Chats
 
 A chat that outgrows the model's context window stops and offers to compact
