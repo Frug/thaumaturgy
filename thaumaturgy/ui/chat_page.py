@@ -254,6 +254,7 @@ async def render():
     )
     scenarios = chat.scenarios()
     names = [s.name for s in scenarios]
+    prompt_names = [item.name for item in chat.system_prompts()]
     remembered = tab.get("chat_scenario") or user.get("chat_scenario") \
         or store.last_scenario()
     chat.scenario_name = remembered if remembered in names \
@@ -269,6 +270,7 @@ async def render():
                   "divider": None, "older": None, "start": 0, "rows": [],
                   "reply_actions": None, "reply_for": None, "key": None,
                   "refresh_context": lambda: None}
+    prompt_control = {"loading": False}
 
     # ── Scenario info panel (slides in from the right) ───────────────────────
     backdrop = ui.element("div").classes("tg-backdrop")
@@ -602,6 +604,7 @@ async def render():
         else:
             tab["chat_id"] = chat.chat.id
             user["chat_id"] = chat.chat.id
+        sync_system_prompt_control()
         follow = sync_transcript()
         chat_list.refresh()
         watch()
@@ -802,6 +805,11 @@ async def render():
 
     def on_scenario_change(name: str):
         apply(chat.select_scenario(name))
+
+    def on_system_prompt_change(name: str | None):
+        if prompt_control["loading"]:
+            return
+        apply(chat.select_system_prompt(name))
 
     def submit(text: str, *, retried: bool = False):
         outcome = chat.send(text)
@@ -1021,6 +1029,19 @@ async def render():
                     .props("color=primary unelevated").classes("h-14 w-14")
 
         with ui.column().classes("h-full w-60 shrink-0 gap-2 p-3 tg-list-shell"):
+            system_prompt_select = ui.select(
+                options=prompt_names, value=chat.system_prompt_name,
+                label="System prompt",
+                on_change=lambda e: on_system_prompt_change(e.value)) \
+                .props("filled dense").classes("w-full tg-field")
+            system_prompt_select.set_enabled(bool(prompt_names))
+            prompt_fallback = ui.row().classes(
+                "w-full gap-1 no-wrap items-start text-warning")
+            with prompt_fallback:
+                ui.icon("warning").props("size=xs").classes("shrink-0 mt-0.5")
+                prompt_fallback_label = ui.label().classes("text-[11px] leading-tight")
+            prompt_fallback.set_visibility(False)
+            ui.separator()
             ui.label("CONTEXT").classes("text-xs text-muted tracking-wide")
             context_counter = ui.badge("Context --") \
                 .props("outline color=secondary") \
@@ -1052,6 +1073,21 @@ async def render():
     context_state = {"signature": None, "busy": False}
     shown_state = {"text": None, "model": None}
 
+    def sync_system_prompt_control():
+        """Keep the per-chat selection and its deleted-prompt warning visible."""
+        prompt_control["loading"] = True
+        current_names = [item.name for item in chat.system_prompts()]
+        system_prompt_select.options = current_names
+        system_prompt_select.value = chat.system_prompt_name
+        system_prompt_select.set_enabled(bool(current_names))
+        system_prompt_select.update()
+        prompt_fallback_label.text = (
+            "The selected prompt was missing; using the first available prompt."
+            if current_names else
+            "The selected prompt was missing; create a system prompt to replace it.")
+        prompt_fallback.set_visibility(chat.system_prompt_fell_back)
+        prompt_control["loading"] = False
+
     def sync_model_state():
         """Follow the model coming and going, which can happen on another page."""
         running = engine.server.running
@@ -1081,7 +1117,10 @@ async def render():
         messages = chat.chat.messages if chat.chat else []
         last = messages[-1].text if messages else ""
         total = chat.context_total()
-        signature = (chat.scenario_name, chat.chat.id if chat.chat else None,
+        selected_prompt = chat.system_prompt()
+        signature = (chat.scenario_name, chat.system_prompt_name,
+                     selected_prompt.prompt_text if selected_prompt else "",
+                     chat.chat.id if chat.chat else None,
                      len(messages), last, input_box.value or "", total,
                      len(chat.chat.summaries) if chat.chat else 0,
                      engine.server.running, engine.server.model,

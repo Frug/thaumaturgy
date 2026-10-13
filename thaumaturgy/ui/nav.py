@@ -5,6 +5,7 @@ from nicegui import app, ui
 NAV: list[tuple[str, str, str]] = [
     ("Chat", "/", "chat"),
     ("Scenarios", "/scenarios", "edit_note"),
+    ("System Prompts", "/system-prompts", "text_snippet"),
     ("Editing", "/editing", "spellcheck"),
     ("Model", "/model", "memory"),
     ("Settings", "/settings", "settings"),

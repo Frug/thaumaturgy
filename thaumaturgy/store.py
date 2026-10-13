@@ -1,4 +1,4 @@
-"""Persistence for chats, scenarios, and model/generation settings."""
+"""Persistence for chats, scenarios, system prompts, and app settings."""
 
 import json
 import os
@@ -73,7 +73,8 @@ def _title_from(messages: list[dict]) -> str:
 
 
 def new_chat(scenario: str | None, model: str | None,
-             opening_text: str | None = None) -> dict:
+             opening_text: str | None = None,
+             system_prompt: str | None = None) -> dict:
     now = time.time()
     chat_id = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
     # Avoid collisions if two chats start within the same second.
@@ -83,6 +84,7 @@ def new_chat(scenario: str | None, model: str | None,
     chat = {
         "id": chat_id,
         "scenario": scenario,
+        "system_prompt": system_prompt,
         "model": model,
         "title": "New chat",
         "created": now,
@@ -165,6 +167,19 @@ def set_chat_favorite(chat_id: str, favorite: bool) -> bool:
         chat["favorite"] = True
     else:
         chat.pop("favorite", None)
+    _write_chat(chat)
+    return True
+
+
+def set_chat_system_prompt(chat_id: str, system_prompt: str | None) -> bool:
+    """Change a chat's reusable prompt without making it look recently active."""
+    chat = load_chat(chat_id)
+    if chat is None:
+        return False
+    if system_prompt:
+        chat["system_prompt"] = system_prompt
+    else:
+        chat.pop("system_prompt", None)
     _write_chat(chat)
     return True
 
@@ -662,6 +677,50 @@ def delete_scenario(scenario: dict) -> None:
     p = scenarios_dir() / f"{slug}.yaml"
     if p.exists():
         p.unlink()
+
+
+# ── System prompts (one YAML file each under <data>/system_prompts/) ──────
+
+def system_prompts_dir():
+    return sub_dir("system_prompts")
+
+
+def list_system_prompts() -> list[dict]:
+    out = []
+    for p in sorted(system_prompts_dir().glob("*.yaml")):
+        try:
+            data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        except (yaml.YAMLError, OSError):
+            continue
+        data = _as_mapping(data)
+        out.append({
+            "name": data.get("name", p.stem),
+            "prompt_text": data.get("prompt_text", ""),
+            "_file": p.stem,
+        })
+    out.sort(key=lambda item: str(item["name"]).lower())
+    return out
+
+
+def save_system_prompt(system_prompt: dict) -> None:
+    new_slug = _slug(system_prompt.get("name", ""))
+    old_file = system_prompt.get("_file")
+    if old_file and old_file != new_slug:
+        old = system_prompts_dir() / f"{old_file}.yaml"
+        if old.exists():
+            old.unlink()
+    data = {
+        "name": system_prompt.get("name", ""),
+        "prompt_text": system_prompt.get("prompt_text", ""),
+    }
+    _write_atomic(system_prompts_dir() / f"{new_slug}.yaml",
+                  yaml.safe_dump(data, sort_keys=False, allow_unicode=True))
+    system_prompt["_file"] = new_slug
+
+
+def delete_system_prompt(system_prompt: dict) -> None:
+    slug = system_prompt.get("_file") or _slug(system_prompt.get("name", ""))
+    (system_prompts_dir() / f"{slug}.yaml").unlink(missing_ok=True)
 
 
 # ── Parameter sets (persisted as one file: <data>/presets.yaml) ──────────────

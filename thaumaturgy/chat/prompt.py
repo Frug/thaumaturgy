@@ -1,10 +1,11 @@
 """Turning a chat and its scenario into chat-completion messages."""
 
 from thaumaturgy import prompting
-from thaumaturgy.chat.models import Chat, Message, Role, Scenario
+from thaumaturgy.chat.models import Chat, Message, Role, Scenario, SystemPrompt
 
 
 def build(chat: Chat, scenario: Scenario | None, *, draft: str = "",
+          system_prompt: SystemPrompt | None = None,
           supports_system_role: bool = True, compacted: bool = True) -> list[dict]:
     """Assemble the request body's messages, including any unsent `draft`.
 
@@ -16,6 +17,8 @@ def build(chat: Chat, scenario: Scenario | None, *, draft: str = "",
     False to size the conversation as the user sees it, in full.
     """
     system_parts = []
+    if system_prompt is not None and system_prompt.prompt_text.strip():
+        system_parts.append(system_prompt.prompt_text.strip())
     if scenario is not None and scenario.context.strip():
         system_parts.append(scenario.context.strip())
 

@@ -12,7 +12,7 @@ from weakref import WeakValueDictionary
 
 from thaumaturgy import appstate, engine, store
 from thaumaturgy.chat import compaction, prompt
-from thaumaturgy.chat.models import Chat, Message, Role, Scenario
+from thaumaturgy.chat.models import Chat, Message, Role, Scenario, SystemPrompt
 from thaumaturgy.chat.runner import ChatRun
 from thaumaturgy.lang import en
 from thaumaturgy.outcome import Outcome
@@ -65,6 +65,9 @@ class ChatService:
         self.model_name = model_name or appstate.state.current_model
         self.chat: Chat | None = None
         self.scenario_name: str | None = None
+        prompts = self.system_prompts()
+        self.system_prompt_name: str | None = prompts[0].name if prompts else None
+        self.system_prompt_fell_back = False
         # Kept as aliases for the small amount of service-level introspection
         # used by callers and tests.
         self._runs = self.runtime.runs
@@ -91,12 +94,48 @@ class ChatService:
         store.save_last_scenario(name)
         return self.open_first(name)
 
+    # ── system prompts ──────────────────────────────────────────────
+    def system_prompts(self) -> list[SystemPrompt]:
+        return [SystemPrompt.from_dict(item) for item in store.list_system_prompts()]
+
+    def _resolve_system_prompt(self) -> None:
+        prompts = self.system_prompts()
+        names = [item.name for item in prompts]
+        chosen = self.chat.system_prompt if self.chat is not None \
+            else self.system_prompt_name
+        missing = bool(chosen and chosen not in names)
+        resolved = chosen if chosen in names else (names[0] if names else None)
+        self.system_prompt_name = resolved
+        if missing:
+            self.system_prompt_fell_back = True
+        if self.chat is not None and self.chat.system_prompt != resolved:
+            self.chat.system_prompt = resolved
+            store.set_chat_system_prompt(self.chat.id, resolved)
+
+    def system_prompt(self) -> SystemPrompt | None:
+        self._resolve_system_prompt()
+        return next((item for item in self.system_prompts()
+                     if item.name == self.system_prompt_name), None)
+
+    def select_system_prompt(self, name: str | None) -> Outcome:
+        names = {item.name for item in self.system_prompts()}
+        if name is not None and name not in names:
+            return Outcome(Step.ERROR, "That system prompt is no longer available.")
+        self.system_prompt_name = name
+        self.system_prompt_fell_back = False
+        if self.chat is not None:
+            self.chat.system_prompt = name
+            store.set_chat_system_prompt(self.chat.id, name)
+        return Outcome(Step.UPDATED)
+
     # ── chats ────────────────────────────────────────────────────────────────
     def list_chats(self, scenario: str | None = None) -> list[dict]:
         return store.list_chats(scenario)
 
     def _adopt(self, chat: Chat | None) -> Outcome:
         self.chat = chat
+        self.system_prompt_fell_back = False
+        self._resolve_system_prompt()
         return Outcome(Step.UPDATED)
 
     def open(self, chat_id: str | None) -> Outcome:
@@ -119,7 +158,8 @@ class ChatService:
 
     def new_chat(self) -> Outcome:
         scenario = self.scenario()
-        raw = store.new_chat(self.scenario_name, self.model_name, None)
+        raw = store.new_chat(self.scenario_name, self.model_name, None,
+                             system_prompt=self.system_prompt_name)
         chat = Chat.from_dict(raw)
         opening = prompt.opening_message(scenario)
         if opening is not None:
@@ -206,7 +246,7 @@ class ChatService:
         """Append an empty assistant message and stream into it."""
         chat = self.chat
         scenario = self.scenario()
-        api = prompt.build(chat, scenario,
+        api = prompt.build(chat, scenario, system_prompt=self.system_prompt(),
                            supports_system_role=engine.server.supports_system_role())
         message = chat.append(Message(
             role=Role.ASSISTANT, name=self.scenario_name or "",
@@ -325,6 +365,7 @@ class ChatService:
         return compaction.plan(
             self.chat, self.scenario(), draft=draft, force=force,
             params=self.params,
+            system_prompt=self.system_prompt(),
             supports_system_role=engine.server.supports_system_role())
 
     def compact(self, draft: str = "", *, force: bool = False,
@@ -387,6 +428,7 @@ class ChatService:
     def context_report(self, draft: str = "") -> compaction.Report:
         return compaction.report(
             self.chat, self.scenario(), draft,
+            system_prompt=self.system_prompt(),
             supports_system_role=engine.server.supports_system_role())
 
     def context_total(self) -> int | None:

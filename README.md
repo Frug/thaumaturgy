@@ -10,7 +10,7 @@ and package management is handled by [uv](https://docs.astral.sh/uv/).
 Thaumaturgy started because I loved the simplicity of 
 [textgen](https://github.com/oobabooga/text-generation-webui), but
 I had a number of nits with the UI I wanted to improve. I wanted managing settings to be quicker and more intuitive (at least for me).
-One local user, GGUF / `llama.cpp` models, scenarios,
+One local user, GGUF / `llama.cpp` models, reusable system prompts, scenarios,
 chat history, sampler presets, and model runtime settings. User data is stored
 as plain JSON/YAML files under the data directory. When a model is loaded,
 thaumaturgy starts and manages the `llama-server` subprocess itself; a separate
@@ -71,7 +71,8 @@ for LoRA training.
 ## Data Files
 
 By default, everything user-owned lives under the data dir (`./data` by
-default) as plain files: `scenarios/*.yaml`, `chats/*.json`, and `presets.yaml`.
+default) as plain files: `system_prompts/*.yaml`, `scenarios/*.yaml`,
+`chats/*.json`, and `presets.yaml`.
 Default scenario examples live in `thaumaturgy/defaults/scenarios/` and are
 copied into `data/scenarios/` once for a fresh data directory. After that they
 are normal local scenarios and can be edited or deleted in the UI. The whole `data/`
