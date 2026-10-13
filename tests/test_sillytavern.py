@@ -74,10 +74,6 @@ def test_page_links_become_raw_links():
         == "https://raw.githubusercontent.com/a/b/main/p.json"
 
 
-def test_unique_name():
-    assert sillytavern.unique_name("A", {"B"}) == "A"
-    assert sillytavern.unique_name("A", {"A", "A (2)"}) == "A (3)"
-
 
 def test_out_of_range_values_are_clamped_and_reported():
     imported = sillytavern.parse_preset({
@@ -91,8 +87,9 @@ def test_out_of_range_values_are_clamped_and_reported():
     assert imported.values["repetition_penalty"] == 1.0
     assert imported.values["max_new_tokens"] == 4096
     assert imported.values["top_k"] == 200
-    assert "genamt 8192 (clamped to 4096)" in imported.skipped
-    assert len(imported.skipped) == 6
+    assert "genamt 8192 → 4096" in imported.clamped
+    assert len(imported.clamped) == 6
+    assert imported.skipped == []
 
 
 def test_bom_and_empty_containers():

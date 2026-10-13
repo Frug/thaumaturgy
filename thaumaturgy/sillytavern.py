@@ -23,24 +23,12 @@ from thaumaturgy import store
 MAX_BYTES = 2 * 1024 * 1024
 FETCH_DEADLINE_S = 30
 
-# Text-completion key -> parameter-set key.
-_TEXTGEN_KEYS = {
-    "genamt": "max_new_tokens",
-    "temp": "temperature",
-    "top_p": "top_p",
-    "top_k": "top_k",
-    "min_p": "min_p",
-    "rep_pen": "repetition_penalty",
-}
-_CHAT_KEYS = {
-    "openai_max_tokens": "max_new_tokens",
-    "temperature": "temperature",
-    "top_p": "top_p",
-    "top_k": "top_k",
-    "min_p": "min_p",
-    "repetition_penalty": "repetition_penalty",
-}
-_INT_KEYS = {"max_new_tokens", "top_k"}
+# Preset key -> parameter-set key, per preset format.
+_SHARED_KEYS = {"top_p": "top_p", "top_k": "top_k", "min_p": "min_p"}
+_TEXTGEN_KEYS = {"genamt": "max_new_tokens", "temp": "temperature",
+                 "rep_pen": "repetition_penalty", **_SHARED_KEYS}
+_CHAT_KEYS = {"openai_max_tokens": "max_new_tokens", "temperature": "temperature",
+              "repetition_penalty": "repetition_penalty", **_SHARED_KEYS}
 
 # Samplers a parameter set can't express, with the value that leaves them off.
 # One set to anything else changes generation, so it is worth reporting.
@@ -84,17 +72,17 @@ class ImportedPreset:
     name: str
     values: dict
     skipped: list[str] = field(default_factory=list)
+    clamped: list[str] = field(default_factory=list)
 
 
 def _number(raw, key: str) -> float:
-    try:
-        ok = not isinstance(raw, bool) and math.isfinite(float(raw)) \
-            and isinstance(raw, (int, float))
-    except (TypeError, ValueError, OverflowError):
-        ok = False
-    if not ok:
-        raise PresetFormatError(f"'{key}' should be a number, not {str(raw)[:40]}")
-    return raw
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+        try:
+            if math.isfinite(raw):
+                return raw
+        except OverflowError:  # An int too large for a float.
+            pass
+    raise PresetFormatError(f"'{key}' should be a number, not {str(raw)[:40]}")
 
 
 def _is_neutral(value, neutral) -> bool:
@@ -123,6 +111,7 @@ def parse_preset(data, fallback_name: str = "Imported") -> ImportedPreset:
         raise PresetFormatError("No SillyTavern sampler settings found.")
 
     values = dict(store.BUILTIN_PRESETS[store.DEFAULT_PRESET])
+    clamped_notes = []
     for src, dst in keys.items():
         if src not in preset:
             continue
@@ -132,8 +121,9 @@ def parse_preset(data, fallback_name: str = "Imported") -> ImportedPreset:
         lo, hi = store.PARAM_RANGES[dst]
         clamped = min(max(raw, lo), hi)
         if clamped != raw:
-            skipped.append(f"{src} {raw:g} (clamped to {clamped:g})")
-        values[dst] = int(clamped) if dst in _INT_KEYS else float(clamped)
+            clamped_notes.append(f"{src} {raw:g} → {clamped:g}")
+        # The default's type says whether the key holds an int or a float.
+        values[dst] = type(values[dst])(clamped)
 
     for key, (label, neutral) in _NEUTRAL.items():
         if key in preset and not _is_neutral(preset[key], neutral) \
@@ -143,7 +133,8 @@ def parse_preset(data, fallback_name: str = "Imported") -> ImportedPreset:
     name = next((n.strip() for n in (preset.get("name"), data.get("name"),
                                       fallback_name)
                  if isinstance(n, str) and n.strip()), "Imported")
-    return ImportedPreset(name=name, values=values, skipped=skipped)
+    return ImportedPreset(name=name, values=values, skipped=skipped,
+                          clamped=clamped_notes)
 
 
 def parse_text(text: str | bytes, fallback_name: str = "Imported") -> ImportedPreset:
@@ -181,12 +172,3 @@ def fetch(url: str) -> ImportedPreset:
             if time.monotonic() > deadline:
                 raise PresetFormatError("Download timed out.")
     return parse_text(body, stem_name(url))
-
-
-def unique_name(name: str, taken) -> str:
-    if name not in taken:
-        return name
-    i = 2
-    while f"{name} ({i})" in taken:
-        i += 1
-    return f"{name} ({i})"

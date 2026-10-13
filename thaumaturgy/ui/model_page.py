@@ -68,18 +68,17 @@ DEFAULT_RUNTIME_TEMPLATE = store.DEFAULT_RUNTIME_TEMPLATE
 FALLBACK_MAX_GPU_LAYERS = 100
 
 # (key, label, min, max, step, decimals, help)
+_R = store.PARAM_RANGES
 PARAMS = [
-    (key, label, *store.PARAM_RANGES[key], step, decimals, help_text)
-    for key, label, step, decimals, help_text in [
-        ("max_new_tokens", "Max new tokens", 1, 0, en.MAX_NEW_TOKENS_HELP),
-        ("temperature", "Temperature", 0.01, 2, en.TEMPERATURE_HELP),
-        ("top_p", "Top-p", 0.01, 2, en.TOP_P_HELP),
-        ("top_k", "Top-k", 1, 0, en.TOP_K_HELP),
-        ("min_p", "Min-p", 0.01, 2, en.MIN_P_HELP),
-        ("repetition_penalty", "Repetition penalty", 0.01, 2,
-         en.REPETITION_PENALTY_HELP),
-        ("recap_tokens", "Recap budget", 64, 0, en.RECAP_BUDGET_HELP),
-    ]
+    ("max_new_tokens", "Max new tokens", *_R["max_new_tokens"], 1, 0,
+     en.MAX_NEW_TOKENS_HELP),
+    ("temperature", "Temperature", *_R["temperature"], 0.01, 2, en.TEMPERATURE_HELP),
+    ("top_p", "Top-p", *_R["top_p"], 0.01, 2, en.TOP_P_HELP),
+    ("top_k", "Top-k", *_R["top_k"], 1, 0, en.TOP_K_HELP),
+    ("min_p", "Min-p", *_R["min_p"], 0.01, 2, en.MIN_P_HELP),
+    ("repetition_penalty", "Repetition penalty", *_R["repetition_penalty"], 0.01, 2,
+     en.REPETITION_PENALTY_HELP),
+    ("recap_tokens", "Recap budget", *_R["recap_tokens"], 64, 0, en.RECAP_BUDGET_HELP),
 ]
 
 
@@ -825,35 +824,38 @@ async def render():
         state["template"] = name
         sets_panel.refresh()
 
+    def add_set(name: str, values: dict):
+        sets[name] = values
+        order.append(name)
+        persist_params()
+        select_set(name)
+
     def new_set():
         i = 1
         while f"Set {i}" in sets:
             i += 1
-        name = f"Set {i}"
-        sets[name] = dict(PRESETS[DEFAULT_PRESET])
-        order.append(name)
-        persist_params()
-        select_set(name)
+        add_set(f"Set {i}", dict(PRESETS[DEFAULT_PRESET]))
 
     def add_imported(imported: sillytavern.ImportedPreset):
         if not import_dialog.value:
             return  # Cancelled while the fetch ran.
-        name = sillytavern.unique_name(imported.name, sets)
-        sets[name] = imported.values
-        order.append(name)
-        persist_params()
+        name, i = imported.name, 2
+        while name in sets:
+            name = f"{imported.name} ({i})"
+            i += 1
         import_dialog.close()
-        select_set(name)
-        msg = f"Imported '{name}'"
+        add_set(name, imported.values)
+        msg = f"Imported '{name}'."
+        if imported.clamped:
+            msg += " Clamped to the slider range: " + ", ".join(imported.clamped) + "."
         if imported.skipped:
-            msg += ". Not carried over: " + ", ".join(imported.skipped)
+            msg += " Not carried over: " + ", ".join(imported.skipped) + "."
         ui.notify(msg, type="positive", multi_line=True, timeout=10000)
 
     async def import_from_url():
         url = (import_url.value or "").strip()
-        if not url:
-            return
-        if not import_fetch.enabled:
+        # Enter in the field bypasses the disabled button.
+        if not url or not import_fetch.enabled:
             return
         import_fetch.disable()
         try:
