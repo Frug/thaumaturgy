@@ -3,7 +3,8 @@
 import pytest
 
 from thaumaturgy import prompting, store
-from thaumaturgy.chat import Chat, Message, Role, Scenario, Step, models, prompt, reply
+from thaumaturgy.chat import (Chat, Message, Role, Scenario, Step, SystemPrompt,
+                              models, prompt, reply)
 from thaumaturgy.chat.service import ChatService
 
 SCENARIO = Scenario(name="Grondar", context="You are Grondar.",
@@ -162,6 +163,14 @@ def test_prompt_assembly():
     assert prompt.build(conversation(), SCENARIO, draft="D")[-1]["content"] == "D"
 
 
+def test_system_prompt_is_applied_before_the_scenario_context():
+    msgs = prompt.build(
+        conversation(), SCENARIO,
+        system_prompt=SystemPrompt(name="Game master", prompt_text="Run the game."))
+    content = msgs[0]["content"]
+    assert content.index("Run the game.") < content.index("You are Grondar.")
+
+
 def test_prompt_assembly_without_a_system_role_or_a_scenario():
     no_sys = prompt.build(conversation(), SCENARIO, supports_system_role=False)
     assert no_sys[0]["role"] == "user" and "You are Grondar." in no_sys[0]["content"]
@@ -215,6 +224,7 @@ def test_a_scenario_fills_its_own_text():
 
 def test_serialisation_round_trip():
     c = conversation()
+    c.system_prompt = "Game master"
     c.favorite = True
     c.messages[2].finish_reason = "length"
     c.messages[2].finish_limit = "context"
@@ -224,10 +234,41 @@ def test_serialisation_round_trip():
     assert back.messages[1].role is Role.USER
     assert back.messages[2].finish_limit == "context"
     assert back.favorite is True
+    assert back.system_prompt == "Game master"
     assert "reasoning" not in c.messages[1].to_dict()  # empty keys stay out
     assert Scenario.from_dict({"name": "n", "context": "c", "_file": "slug"}).file == "slug"
     assert Scenario.from_dict({"name": "n"}).variables == {}
     assert Scenario.from_dict({"name": "n", "variables": {"a": "b"}}).variables == {"a": "b"}
+
+
+def test_missing_system_prompt_falls_back_per_chat(tmp_path, monkeypatch):
+    monkeypatch.setenv("THAUM_DATA", str(tmp_path))
+    first = {"name": "First", "prompt_text": "One", "_file": None}
+    second = {"name": "Second", "prompt_text": "Two", "_file": None}
+    store.save_system_prompt(first)
+    store.save_system_prompt(second)
+    raw = store.new_chat("s", None, system_prompt="Deleted")
+    updated = raw["updated"]
+
+    service = ChatService()
+    service.open(raw["id"])
+
+    assert service.system_prompt_name == "First"
+    assert service.system_prompt_fell_back is True
+    assert store.load_chat(raw["id"])["system_prompt"] == "First"
+    assert store.load_chat(raw["id"])["updated"] == updated
+
+
+def test_system_prompt_selection_is_saved_on_the_chat(tmp_path, monkeypatch):
+    monkeypatch.setenv("THAUM_DATA", str(tmp_path))
+    store.save_system_prompt({"name": "One", "prompt_text": "1", "_file": None})
+    store.save_system_prompt({"name": "Two", "prompt_text": "2", "_file": None})
+    service = ChatService()
+    service.scenario_name = "s"
+    service.new_chat()
+
+    assert service.select_system_prompt("Two").step is Step.UPDATED
+    assert store.load_chat(service.chat.id)["system_prompt"] == "Two"
 
 
 def test_favoriting_pins_a_chat_without_refreshing_its_timestamp():

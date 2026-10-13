@@ -70,3 +70,20 @@ def test_loaded_model_tracks_its_original_directory(tmp_path, monkeypatch):
     assert engine.delete_model("same.gguf") == ["same.gguf"]
     assert old_model.exists()
     assert not new_model.exists()
+
+
+def test_system_prompts_are_stored_as_individual_yaml_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("THAUM_DATA", str(tmp_path))
+    item = {"name": "Game Master", "prompt_text": "Run a roleplay.", "_file": None}
+    store.save_system_prompt(item)
+
+    assert store.list_system_prompts()[0]["prompt_text"] == "Run a roleplay."
+    assert (tmp_path / "system_prompts" / "Game Master.yaml").exists()
+
+    item["name"] = "Narrator"
+    store.save_system_prompt(item)
+    assert not (tmp_path / "system_prompts" / "Game Master.yaml").exists()
+    assert store.list_system_prompts()[0]["name"] == "Narrator"
+
+    store.delete_system_prompt(item)
+    assert store.list_system_prompts() == []

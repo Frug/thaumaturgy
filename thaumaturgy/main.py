@@ -15,6 +15,7 @@ from thaumaturgy.ui import (
     nav,
     scenarios_page,
     settings_page,
+    system_prompts_page,
 )
 
 # Clean up a llama-server orphaned by a previous (reloaded) instance. Done from
@@ -56,6 +57,11 @@ def page_chat():
 @layout_page("/scenarios")
 def page_scenarios():
     scenarios_page.render()
+
+
+@layout_page("/system-prompts")
+def page_system_prompts():
+    system_prompts_page.render()
 
 
 @layout_page("/editing")

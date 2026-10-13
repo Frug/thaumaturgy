@@ -138,6 +138,7 @@ class Summary:
 class Chat:
     id: str
     scenario: str | None = None
+    system_prompt: str | None = None
     model: str | None = None
     title: str = "New chat"
     # Set by a rename; stops the title being derived from the first message.
@@ -180,7 +181,8 @@ class Chat:
     @classmethod
     def from_dict(cls, d: dict) -> "Chat":
         return cls(
-            id=d["id"], scenario=d.get("scenario"), model=d.get("model"),
+            id=d["id"], scenario=d.get("scenario"),
+            system_prompt=d.get("system_prompt"), model=d.get("model"),
             title=d.get("title") or "New chat",
             title_custom=bool(d.get("title_custom")),
             favorite=bool(d.get("favorite")),
@@ -196,6 +198,8 @@ class Chat:
             "title": self.title, "created": self.created, "updated": self.updated,
             "messages": [m.to_dict() for m in self.messages],
         }
+        if self.system_prompt:
+            out["system_prompt"] = self.system_prompt
         if self.title_custom:
             out["title_custom"] = True
         if self.favorite:
@@ -248,3 +252,18 @@ class Scenario:
         """
         return replace(self, context=fill(self.context, self.variables),
                        opening_text=fill(self.opening_text, self.variables))
+
+
+@dataclass(frozen=True)
+class SystemPrompt:
+    """Reusable high-level instructions applied before a scenario."""
+
+    name: str
+    prompt_text: str = ""
+    file: str | None = None
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SystemPrompt":
+        return cls(name=d.get("name") or "",
+                   prompt_text=d.get("prompt_text") or "",
+                   file=d.get("_file"))

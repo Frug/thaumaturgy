@@ -17,7 +17,8 @@ from dataclasses import dataclass
 
 from thaumaturgy import appstate, engine, prompting, store
 from thaumaturgy.chat import prompt, reply
-from thaumaturgy.chat.models import Chat, Message, Role, Scenario, Summary, fingerprint
+from thaumaturgy.chat.models import (Chat, Message, Role, Scenario, Summary,
+                                     SystemPrompt, fingerprint)
 
 # Of the window, counting the reply we are about to make room for. Below this
 # nothing happens; the cost of compacting is a full prompt reprocess, since
@@ -115,22 +116,27 @@ def reserve(params: dict | None = None) -> int:
 
 
 def _count(chat: Chat, scenario: Scenario | None, draft: str,
-           supports_system_role: bool, *, compacted: bool) -> tuple[int, bool]:
+           supports_system_role: bool, *, compacted: bool,
+           system_prompt: SystemPrompt | None = None) -> tuple[int, bool]:
     return engine.server.count_chat_tokens(
         prompt.build(chat, scenario, draft=draft, compacted=compacted,
+                     system_prompt=system_prompt,
                      supports_system_role=supports_system_role))
 
 
 def report(chat: Chat | None, scenario: Scenario | None, draft: str = "",
-           supports_system_role: bool = True) -> Report:
+           supports_system_role: bool = True,
+           system_prompt: SystemPrompt | None = None) -> Report:
     chat = chat or Chat(id="")
     summary = chat.active_summary()
-    used, exact = _count(chat, scenario, draft, supports_system_role, compacted=True)
+    used, exact = _count(chat, scenario, draft, supports_system_role,
+                         compacted=True, system_prompt=system_prompt)
     if summary is None:
         return Report(used=used, total=window(), exact=exact, full=used,
                       covered=0, messages=len(chat.messages), recap_tokens=0)
     # Only a compacted chat pays for the second count.
-    full, _ = _count(chat, scenario, draft, supports_system_role, compacted=False)
+    full, _ = _count(chat, scenario, draft, supports_system_role,
+                     compacted=False, system_prompt=system_prompt)
     return Report(used=used, total=window(), exact=exact, full=full,
                   covered=summary.covers, messages=len(chat.messages),
                   recap_tokens=summary.tokens)
@@ -155,7 +161,8 @@ def _split_point(messages: list[Message], keep_tokens: int, start: int) -> int:
 
 def plan(chat: Chat | None, scenario: Scenario | None, *, draft: str = "",
          supports_system_role: bool = True, force: bool = False,
-         params: dict | None = None) -> Plan | None:
+         params: dict | None = None,
+         system_prompt: SystemPrompt | None = None) -> Plan | None:
     """What compaction is needed before the next reply, or None if it isn't.
 
     With `force`, plan one regardless of how full the window is: the user asking
@@ -169,12 +176,15 @@ def plan(chat: Chat | None, scenario: Scenario | None, *, draft: str = "",
     if not total:
         return None
     room = reserve(params)
-    used, _ = _count(chat, scenario, draft, supports_system_role, compacted=True)
+    used, _ = _count(chat, scenario, draft, supports_system_role,
+                     compacted=True, system_prompt=system_prompt)
     if not force and used + room <= total * TRIGGER_RATIO:
         return None
 
     budget = recap_budget(total, params)
     overhead = engine.estimate_tokens(scenario.context) if scenario else 0
+    if system_prompt is not None:
+        overhead += engine.estimate_tokens(system_prompt.prompt_text)
     keep = int(total * TARGET_RATIO) - room - budget - overhead
     if force:
         # The target is a share of the window, so a chat that still fits would
