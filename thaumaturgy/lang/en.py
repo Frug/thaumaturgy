@@ -149,3 +149,17 @@ STREAM_STATS_HELP = (
     "comparing against good ones. Off is the normal setting."
 )
 
+
+# Model page: the llama.cpp install that serves models.
+LLAMA_HELP = (
+    "Models run on llama.cpp's llama-server, downloaded from the official "
+    "ggml-org releases in the build that suits this computer: CUDA for NVIDIA "
+    "cards, Vulkan for other GPUs, Metal on a Mac. Updating fetches the newest "
+    "build, which usually adds support for recently released models."
+)
+LLAMA_NOT_INSTALLED = "Not installed yet. It is downloaded when you first load a model."
+LLAMA_OVERRIDDEN = "Using {path} from $THAUM_LLAMA_SERVER."
+LLAMA_UNLOAD_FIRST = "Unload the model before updating llama.cpp."
+LLAMA_BUSY = "Wait for the llama.cpp download to finish."
+LLAMA_UP_TO_DATE = "llama.cpp is up to date ({build})."
+LLAMA_INSTALLED = "Installed llama.cpp {build}."

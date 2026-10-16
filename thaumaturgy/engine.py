@@ -382,6 +382,9 @@ class LlamaServer:
         path = models_dir() / model_name
         if not path.exists():
             raise FileNotFoundError(f"Model not found: {path}")
+        if not llama_bins.installed():
+            raise FileNotFoundError(
+                f"llama-server not found at {llama_bins.server_path()}")
         host, configured_port, api_key = _listen_config()
         port = configured_port or _free_port()
         cmd = [

@@ -6,9 +6,11 @@ and, in edit mode, the parameter-set editor. VRAM is a rough pre-load estimate;
 the detected max context comes from the GGUF metadata.
 """
 
+import asyncio
+
 from nicegui import app, context, run, ui
 
-from thaumaturgy import appstate, engine, hf_download, store
+from thaumaturgy import appstate, engine, hf_download, llama_bins, llama_install, store
 from thaumaturgy.lang import en
 from thaumaturgy.ui import outcomes, preset_import
 
@@ -519,6 +521,74 @@ def _model_card(bridge):
             lambda e: bridge["apply_param"](e.value) if "apply_param" in bridge else None)
         bridge["param_select"] = param_set
 
+        with ui.column().classes("tg-pset-box w-full gap-2"):
+            ui.label("llama.cpp").classes("text-xs text-muted uppercase tracking-wide")
+            llama_version = ui.label().classes("text-sm font-mono break-all")
+            llama_progress = ui.label().classes("text-xs text-muted")
+            llama_progress.set_visibility(False)
+            llama_btn = ui.button("Update llama.cpp", icon="system_update_alt") \
+                .props("color=primary unelevated")
+            ui.label(en.LLAMA_HELP).classes("text-xs text-muted leading-snug")
+
+        async def refresh_llama() -> None:
+            if llama_bins.overridden():
+                llama_version.text = en.LLAMA_OVERRIDDEN.format(
+                    path=llama_bins.server_path())
+                llama_btn.disable()
+            elif not llama_bins.installed():
+                llama_version.text = en.LLAMA_NOT_INSTALLED
+            else:
+                build = await run.io_bound(llama_install.installed_build)
+                llama_version.text = " · ".join(
+                    filter(None, [build or "unknown build",
+                                  llama_install.installed_backend()]))
+
+        async def install_llama(release: dict | None = None) -> bool:
+            """Install llama.cpp, mirroring its progress under the version."""
+            prog = {"msg": "Starting…"}
+            timer = ui.timer(0.3, lambda: setattr(llama_progress, "text", prog["msg"]))
+            llama_progress.set_visibility(True)
+            llama_btn.props("loading")
+            try:
+                done = await run.io_bound(
+                    llama_install.install,
+                    lambda m: prog.__setitem__("msg", m), release)
+                outcomes.toast(en.LLAMA_INSTALLED.format(build=done), "positive")
+                return True
+            except Exception as exc:  # noqa: BLE001 - surface any failure to the user
+                outcomes.toast(f"llama.cpp install failed: {exc}", "negative")
+                return False
+            finally:
+                timer.deactivate()
+                llama_progress.set_visibility(False)
+                llama_btn.props(remove="loading")
+                await refresh_llama()
+
+        async def update_llama() -> None:
+            if llama_install.busy():
+                ui.notify(en.LLAMA_BUSY, type="warning")
+                return
+            if engine.server.unloadable:
+                ui.notify(en.LLAMA_UNLOAD_FIRST, type="warning")
+                return
+            llama_btn.props("loading")
+            try:
+                release, build = await asyncio.gather(
+                    run.io_bound(llama_install.latest_release),
+                    run.io_bound(llama_install.installed_build))
+            except Exception as exc:  # noqa: BLE001 - offline, rate-limited, ...
+                ui.notify(f"Couldn't check for updates: {exc}", type="negative")
+                return
+            finally:
+                llama_btn.props(remove="loading")
+            if build == release["tag_name"]:
+                ui.notify(en.LLAMA_UP_TO_DATE.format(build=build), type="positive")
+                return
+            await install_llama(release)
+
+        llama_btn.on_click(update_llama)
+        ui.timer(0, refresh_llama, once=True)
+
         def refresh_runtime_owner():
             runtime_owner.text = ("Settings are saved per model."
                                   if bridge["current_model"]() else "Select a model.")
@@ -590,6 +660,15 @@ def _model_card(bridge):
             current_model = bridge["current_model"]()
             if not current_model:
                 ui.notify("No models in the models folder", type="negative")
+                return
+            if llama_install.busy():
+                ui.notify(en.LLAMA_BUSY, type="warning")
+                return
+            # First run: fetch llama.cpp rather than fail the load. An
+            # overridden path that's missing is the user's to fix, so the
+            # engine's error says where it looked.
+            if (not llama_bins.installed() and not llama_bins.overridden()
+                    and not await install_llama()):
                 return
             args = _runtime_load_args(bridge["active_runtime"]())
             # Backstop for hand-edited YAML; the slider can't exceed this.

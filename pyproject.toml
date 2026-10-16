@@ -7,8 +7,7 @@ license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = [
     "nicegui",
-    "requests",              # talk to the llama-server HTTP API
-    "llama-cpp-binaries",    # bundled llama-server binary (URL pinned below)
+    "requests",              # llama-server HTTP API; llama.cpp release downloads
     "huggingface-hub",       # download models (light: no torch); direct GGUF pull
 ]
 
@@ -26,10 +25,6 @@ dev = ["pytest"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-[tool.uv.sources]
-# Not on PyPI: oobabooga's prebuilt llama-server (CUDA cu131, Linux x86_64).
-llama-cpp-binaries = { url = "https://github.com/oobabooga/llama-cpp-binaries/releases/download/v0.138.0/llama_cpp_binaries-0.138.0+cu131-py3-none-linux_x86_64.whl" }
 
 [project.scripts]
 thaumaturgy = "thaumaturgy.main:cli"

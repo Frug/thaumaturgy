@@ -30,6 +30,13 @@ make start           # uv run thaumaturgy         (no hot reload)
 make start-dev       # python -m thaumaturgy.main (hot reload for development)
 ```
 
+llama.cpp isn't a Python dependency. The first model load downloads the latest
+prebuilt `llama-server` from [ggml-org's releases](https://github.com/ggml-org/llama.cpp/releases)
+into `data/llama.cpp/bin`, picking CUDA for NVIDIA GPUs, Vulkan otherwise, and
+Metal on macOS. **Update llama.cpp** on the Model page fetches newer builds.
+
+- `THAUM_LLAMA_SERVER` — use your own `llama-server` instead of the managed
+  one; `llama-quantize` is looked up next to it.
 - `THAUM_HOST` — address for the Thaumaturgy admin UI (default `127.0.0.1`).
 - `THAUM_PORT` — admin UI port (default `8080`).
 - `THAUM_DATA` — data directory (default `./data`).

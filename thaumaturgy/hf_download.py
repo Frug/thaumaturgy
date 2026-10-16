@@ -6,8 +6,8 @@ Two paths, chosen by what the repo actually contains:
     Light path: only needs huggingface_hub (a core dependency).
 
   * Repo is safetensors → snapshot it, convert to an f16 GGUF with llama.cpp's
-    convert_hf_to_gguf.py (auto-fetched, pinned to the bundled binary's build
-    commit), then quantize with the resolved llama-quantize. Heavy path: needs the
+    convert_hf_to_gguf.py (auto-fetched, pinned to the installed llama-server's
+    build commit), then quantize with the resolved llama-quantize. Heavy path: needs the
     convert deps (torch/transformers/gguf/sentencepiece) from the `training` extra.
 
 All long steps take an on_progress(str) callback so the UI can show stage text.
@@ -96,8 +96,9 @@ def _prune_converters(keep: Path) -> None:
 def _converter_path(on_progress) -> Path:
     """Fetch convert_hf_to_gguf.py plus the `conversion` package it imports.
 
-    Kept next to each other and pinned to the bundled binary's build commit,
-    since the CLI and the package are only guaranteed to agree within one tree.
+    Kept next to each other and pinned to the installed llama-server's build
+    commit, since the CLI and the package are only guaranteed to agree within
+    one tree.
     """
     commit = _build_commit()
     root = sub_dir("cache") / "converter" / commit
