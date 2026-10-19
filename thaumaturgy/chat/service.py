@@ -205,6 +205,21 @@ class ChatService:
         action = "Added to" if favorite else "Removed from"
         return Outcome(Step.UPDATED, f"{action} favorites.")
 
+    def set_background(self, chat_id: str, background: str | None) -> Outcome:
+        if self._occupied(chat_id):
+            return Outcome(
+                Step.BLOCKED,
+                "Wait for generation to finish before changing the background.")
+        if not store.set_chat_background(chat_id, background):
+            return Outcome(Step.ERROR, "That chat could not be updated.")
+        live = self.runtime.chats.get(chat_id)
+        if live is not None:
+            live.background = background
+        if self.chat is not None and self.chat.id == chat_id:
+            self.chat.background = background
+        return Outcome(Step.UPDATED,
+                       "Background updated." if background else "Background removed.")
+
     def _save(self, chat: Chat | None = None) -> None:
         chat = chat or self.chat
         if chat is not None:

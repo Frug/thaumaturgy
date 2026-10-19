@@ -171,6 +171,19 @@ def set_chat_favorite(chat_id: str, favorite: bool) -> bool:
     return True
 
 
+def set_chat_background(chat_id: str, background: str | None) -> bool:
+    """Change a chat's background without making it look recently active."""
+    chat = load_chat(chat_id)
+    if chat is None:
+        return False
+    if background:
+        chat["background"] = background
+    else:
+        chat.pop("background", None)
+    _write_chat(chat)
+    return True
+
+
 def set_chat_system_prompt(chat_id: str, system_prompt: str | None) -> bool:
     """Change a chat's reusable prompt without making it look recently active."""
     chat = load_chat(chat_id)
@@ -185,8 +198,12 @@ def set_chat_system_prompt(chat_id: str, system_prompt: str | None) -> bool:
 
 
 def delete_chat(chat_id: str) -> None:
+    chat = load_chat(chat_id)
     for p in _chat_paths(chat_id):
         p.unlink(missing_ok=True)
+    if chat:
+        from thaumaturgy import backgrounds
+        backgrounds.remove(chat.get("background"))
 
 
 # ── Editing jobs (one JSON file each under <data>/editing/) ─────────────────

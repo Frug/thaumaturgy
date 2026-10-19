@@ -2,9 +2,18 @@
 
 import pytest
 
-from thaumaturgy import prompting, store
-from thaumaturgy.chat import (Chat, Message, Role, Scenario, Step, SystemPrompt,
-                              models, prompt, reply)
+from thaumaturgy import backgrounds, prompting, store
+from thaumaturgy.chat import (
+    Chat,
+    Message,
+    Role,
+    Scenario,
+    Step,
+    SystemPrompt,
+    models,
+    prompt,
+    reply,
+)
 from thaumaturgy.chat.service import ChatService
 
 SCENARIO = Scenario(name="Grondar", context="You are Grondar.",
@@ -150,6 +159,7 @@ def test_nothing_is_touched_while_a_reply_is_running():
     assert s.edit_message(1, "changed").step is Step.BLOCKED
     assert s.delete_message(1).step is Step.BLOCKED
     assert s.set_favorite("c1", True).step is Step.BLOCKED
+    assert s.set_background("c1", "image.png").step is Step.BLOCKED
     assert s.chat.messages[1].text == "Hello."
 
 
@@ -226,6 +236,7 @@ def test_serialisation_round_trip():
     c = conversation()
     c.system_prompt = "Game master"
     c.favorite = True
+    c.background = "0123456789abcdef-0123456789abcdef.png"
     c.messages[2].finish_reason = "length"
     c.messages[2].finish_limit = "context"
     c.messages[2].reasoning = "some thinking"
@@ -234,6 +245,7 @@ def test_serialisation_round_trip():
     assert back.messages[1].role is Role.USER
     assert back.messages[2].finish_limit == "context"
     assert back.favorite is True
+    assert back.background == c.background
     assert back.system_prompt == "Game master"
     assert "reasoning" not in c.messages[1].to_dict()  # empty keys stay out
     assert Scenario.from_dict({"name": "n", "context": "c", "_file": "slug"}).file == "slug"
@@ -283,3 +295,45 @@ def test_favoriting_pins_a_chat_without_refreshing_its_timestamp():
 
     assert store.set_chat_favorite(first["id"], False)
     assert store.list_chats("favorite-order-test")[0]["id"] == second["id"]
+
+
+def test_chat_background_is_saved_without_refreshing_its_timestamp():
+    raw = store.new_chat("background-test", None)
+    updated = raw["updated"]
+    filename = "0123456789abcdef-0123456789abcdef.png"
+
+    assert store.set_chat_background(raw["id"], filename)
+    saved = store.load_chat(raw["id"])
+    assert saved["background"] == filename
+    assert saved["updated"] == updated
+
+    assert store.set_chat_background(raw["id"], None)
+    assert "background" not in store.load_chat(raw["id"])
+
+
+def test_background_images_are_validated_stored_and_removed(tmp_path, monkeypatch):
+    monkeypatch.setenv("THAUM_DATA", str(tmp_path))
+    png = b"\x89PNG\r\n\x1a\n" + b"image data"
+
+    filename = backgrounds.save("chat/with unsafe characters", png)
+
+    assert backgrounds.valid_name(filename)
+    assert backgrounds.url(filename) == f"/chat-backgrounds/{filename}"
+    assert (tmp_path / "chat-backgrounds" / filename).read_bytes() == png
+    with pytest.raises(ValueError, match="PNG"):
+        backgrounds.save("chat", b"not an image")
+
+    backgrounds.remove(filename)
+    assert backgrounds.url(filename) is None
+
+
+def test_deleting_a_chat_removes_its_background(tmp_path, monkeypatch):
+    monkeypatch.setenv("THAUM_DATA", str(tmp_path))
+    raw = store.new_chat("background-delete-test", None)
+    filename = backgrounds.save(raw["id"], b"GIF89a" + b"image data")
+    store.set_chat_background(raw["id"], filename)
+
+    store.delete_chat(raw["id"])
+
+    assert store.load_chat(raw["id"]) is None
+    assert backgrounds.url(filename) is None
