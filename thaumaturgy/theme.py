@@ -127,6 +127,15 @@ _HEAD_HTML = """
     background: rgba(30, 34, 44, 0.84);
     box-shadow: 0 1px 8px rgba(0, 0, 0, 0.28);
   }
+  .tg-chat-background .tg-message-speaker {
+    padding: 2px 5px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(6px);
+  }
+  .body--dark .tg-chat-background .tg-message-speaker {
+    background: rgba(237, 239, 243, 0.84);
+  }
 
   /* Compact chat-history list: square, tight rows that never overflow sideways */
   .tg-chat-item.q-item {

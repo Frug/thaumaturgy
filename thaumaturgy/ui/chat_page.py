@@ -203,7 +203,7 @@ def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
         with col:
             _avatar(m)
             ui.label(m.name or "").classes(
-                "text-xs text-center leading-tight "
+                "text-xs text-center leading-tight tg-message-speaker "
                 + ("text-primary" if clickable else "text-muted"))
         bubble = ui.column().classes(
             "flex-1 min-w-0 gap-1 p-3 rounded-xl tg-message-bubble")
