@@ -11,7 +11,7 @@ import time
 
 from nicegui import app, context, run, ui
 
-from thaumaturgy import engine, store
+from thaumaturgy import backgrounds, engine, store
 from thaumaturgy.chat import ChatService, Message, Step, chat_runtime
 from thaumaturgy.lang import en
 from thaumaturgy.ui.outcomes import notify, toast
@@ -203,11 +203,12 @@ def _message(m: Message, on_scenario_click=None, on_edit=None, on_delete=None,
         with col:
             _avatar(m)
             ui.label(m.name or "").classes(
-                "text-xs text-center leading-tight "
+                "text-xs text-center leading-tight tg-message-speaker "
                 + ("text-primary" if clickable else "text-muted"))
-        bubble = ui.column().classes("flex-1 min-w-0 gap-1 p-3 rounded-xl")
+        bubble = ui.column().classes(
+            "flex-1 min-w-0 gap-1 p-3 rounded-xl tg-message-bubble")
         if m.is_user:
-            bubble.style("background: rgba(52,97,140,0.10)")
+            bubble.classes("tg-user-message")
         with bubble:
             text, reasoning = m.display()
             if not text.strip() and not m.is_user and not streaming:
@@ -605,6 +606,7 @@ async def render():
             tab["chat_id"] = chat.chat.id
             user["chat_id"] = chat.chat.id
         sync_system_prompt_control()
+        sync_background()
         follow = sync_transcript()
         chat_list.refresh()
         watch()
@@ -622,6 +624,7 @@ async def render():
 
     pending_delete = {"chat_id": None}
     pending_rename = {"chat_id": None}
+    pending_background = {"chat_id": None}
     pending_edit = {"chat_id": None, "index": None}
     pending_message_delete = {"chat_id": None, "index": None}
     pending_compaction = {"draft": "", "active": False, "force": False, "redo": False}
@@ -661,6 +664,48 @@ async def render():
             ui.button("Cancel", on_click=rename_dialog.close).props("flat")
             ui.button("Save", icon="save", on_click=lambda: save_renamed_chat()) \
                 .props("color=primary unelevated")
+
+    async def save_background(e):
+        chat_id = pending_background["chat_id"]
+        if not chat_id:
+            return
+        old = (store.load_chat(chat_id) or {}).get("background")
+        try:
+            filename = backgrounds.save(chat_id, await e.file.read())
+        except (OSError, ValueError) as exc:
+            ui.notify(str(exc), type="negative")
+            background_upload.reset()
+            return
+        outcome = chat.set_background(chat_id, filename)
+        if outcome.step is not Step.UPDATED:
+            if filename != old:
+                backgrounds.remove(filename)
+            notify(outcome)
+            background_upload.reset()
+            return
+        if old != filename:
+            backgrounds.remove(old)
+        background_dialog.close()
+        background_upload.reset()
+        pending_background["chat_id"] = None
+        notify(outcome)
+        show_current() if chat.chat and chat.chat.id == chat_id else chat_list.refresh()
+
+    with ui.dialog() as background_dialog, ui.card().classes("p-5 gap-3") \
+            .style("width:480px;max-width:92vw"):
+        ui.label("Chat background").classes("text-lg font-semibold")
+        background_name = ui.label().classes("text-sm")
+        ui.label("PNG, JPEG, WebP, or GIF · up to 15 MB") \
+            .classes("text-xs text-muted")
+        background_upload = ui.upload(
+            on_upload=save_background, auto_upload=True, multiple=False, max_files=1,
+            max_file_size=backgrounds.MAX_BYTES, label="Choose an image",
+            on_rejected=lambda _: ui.notify(
+                "Choose one supported image under 15 MB.", type="warning")) \
+            .props(f"flat bordered accept={backgrounds.ACCEPT}") \
+            .classes("w-full tg-field")
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Cancel", on_click=background_dialog.close).props("flat")
 
     with ui.dialog() as compact_dialog, ui.card().classes("p-5 gap-3") \
             .style("width:460px;max-width:92vw"):
@@ -737,6 +782,22 @@ async def render():
         notify(outcome)
         if outcome.step is Step.UPDATED:
             chat_list.refresh()
+
+    def ask_background(raw: dict):
+        pending_background["chat_id"] = raw["id"]
+        background_name.text = raw.get("title") or "New chat"
+        background_upload.reset()
+        background_dialog.open()
+
+    def remove_background(raw: dict):
+        fresh = store.load_chat(raw["id"]) or {}
+        old = fresh.get("background")
+        outcome = chat.set_background(raw["id"], None)
+        notify(outcome)
+        if outcome.step is Step.UPDATED:
+            backgrounds.remove(old)
+            show_current() if chat.chat and chat.chat.id == raw["id"] \
+                else chat_list.refresh()
 
     def message_at(index: int) -> Message | None:
         messages = chat.chat.messages if chat.chat else []
@@ -981,6 +1042,12 @@ async def render():
                         label = "Unfavorite" if raw.get("favorite") else "Favorite"
                         ui.menu_item(label, on_click=lambda r=raw: set_favorite_chat(r))
                         ui.menu_item("Rename", on_click=lambda r=raw: ask_rename_chat(r))
+                        ui.menu_item(
+                            "Change background" if raw.get("background") else "Set background",
+                            on_click=lambda r=raw: ask_background(r))
+                        if raw.get("background"):
+                            ui.menu_item("Remove background",
+                                         on_click=lambda r=raw: remove_background(r))
                         ui.menu_item("Delete", on_click=lambda r=raw: ask_delete_chat(r))
 
     # ── Layout: sidebar + main ───────────────────────────────────────────────
@@ -997,7 +1064,8 @@ async def render():
                 .props("color=positive unelevated").classes("w-full")
 
         with ui.column().classes("h-full flex-1 min-w-0 no-wrap gap-2"):
-            with ui.scroll_area().classes("flex-1 w-full") as transcript_scroll:
+            with ui.scroll_area().classes(
+                    "flex-1 w-full tg-chat-transcript") as transcript_scroll:
                 msgs_col = ui.column().classes("w-full")
             # Decided in the browser so it can pin the first visible message
             # before the batch lands; otherwise the view jumps by its height.
@@ -1072,6 +1140,15 @@ async def render():
 
     context_state = {"signature": None, "busy": False}
     shown_state = {"text": None, "model": None}
+
+    def sync_background():
+        filename = chat.chat.background if chat.chat else None
+        image_url = backgrounds.url(filename)
+        transcript_scroll.classes(
+            add="tg-chat-background" if image_url else None,
+            remove=None if image_url else "tg-chat-background")
+        transcript_scroll.style(
+            replace=f'--tg-chat-image: url("{image_url}")' if image_url else "")
 
     def sync_system_prompt_control():
         """Keep the per-chat selection and its deleted-prompt warning visible."""

@@ -72,7 +72,9 @@ for LoRA training.
 
 By default, everything user-owned lives under the data dir (`./data` by
 default) as plain files: `system_prompts/*.yaml`, `scenarios/*.yaml`,
-`chats/*.json`, and `presets.yaml`.
+`chats/*.json`, `chat-backgrounds/*`, and `presets.yaml`. A chat background can
+be set, replaced, or removed from that chat's menu; supported uploads are PNG,
+JPEG, WebP, and GIF images up to 15 MB.
 Default scenario examples live in `thaumaturgy/defaults/scenarios/` and are
 copied into `data/scenarios/` once for a fresh data directory. After that they
 are normal local scenarios and can be edited or deleted in the UI. The whole `data/`

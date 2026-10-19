@@ -5,9 +5,9 @@ import os
 from collections.abc import Callable
 from contextlib import contextmanager
 
-from nicegui import ui
+from nicegui import app, ui
 
-from thaumaturgy import engine, store, theme
+from thaumaturgy import backgrounds, engine, store, theme
 from thaumaturgy.ui import (
     chat_page,
     editing_page,
@@ -24,6 +24,7 @@ from thaumaturgy.ui import (
 engine.reap_stale()
 
 ui.add_head_html(theme.head_html(), shared=True)
+app.add_static_files("/chat-backgrounds", backgrounds.directory(), max_cache_age=31536000)
 
 
 @contextmanager

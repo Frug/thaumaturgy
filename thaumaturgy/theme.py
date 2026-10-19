@@ -97,6 +97,46 @@ _HEAD_HTML = """
   .tg-msg:hover .tg-msg-actions,
   .tg-msg-actions:focus-within { opacity: 1; }
 
+  /* Optional per-chat artwork. The tint and frosted bubbles keep prose legible
+     across both bright and dark images without hiding the artwork. */
+  .tg-chat-transcript {
+    border-radius: 12px;
+    transition: background-image 150ms ease;
+  }
+  .tg-chat-transcript.tg-chat-background {
+    background-image:
+      linear-gradient(rgba(237, 239, 243, 0.42), rgba(237, 239, 243, 0.42)),
+      var(--tg-chat-image);
+    background-position: center;
+    background-size: cover;
+  }
+  .body--dark .tg-chat-transcript.tg-chat-background {
+    background-image:
+      linear-gradient(rgba(24, 25, 31, 0.48), rgba(24, 25, 31, 0.48)),
+      var(--tg-chat-image);
+  }
+  .tg-message-bubble.tg-user-message {
+    background: rgba(52, 97, 140, 0.10);
+  }
+  .tg-chat-background .tg-message-bubble {
+    background: rgba(255, 255, 255, 0.82);
+    backdrop-filter: blur(8px);
+    box-shadow: 0 1px 8px rgba(20, 30, 55, 0.12);
+  }
+  .body--dark .tg-chat-background .tg-message-bubble {
+    background: rgba(30, 34, 44, 0.84);
+    box-shadow: 0 1px 8px rgba(0, 0, 0, 0.28);
+  }
+  .tg-chat-background .tg-message-speaker {
+    padding: 2px 5px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.78);
+    backdrop-filter: blur(6px);
+  }
+  .body--dark .tg-chat-background .tg-message-speaker {
+    background: rgba(237, 239, 243, 0.84);
+  }
+
   /* Compact chat-history list: square, tight rows that never overflow sideways */
   .tg-chat-item.q-item {
     border-radius: 0;
