@@ -248,8 +248,11 @@ def _fill(template: str, values: dict, content: tuple = ("recap", "transcript"))
 
 def _generate(messages: list[dict], budget: int) -> str:
     """Run the summarizer to completion and return its text."""
+    # Thinking off: it would spend the pass's budget planning, leaving the recap
+    # cut short or, when nothing else came out, made of the plan itself.
     params = {"temperature": 0.3, "top_p": 0.9, "top_k": 40, "min_p": 0.05,
-              "repetition_penalty": 1.05, "max_new_tokens": budget}
+              "repetition_penalty": 1.05, "max_new_tokens": budget,
+              "thinking": False}
     text, reasoning = "", ""
     for event in engine.server.stream_chat(messages, params):
         delta = event.get("text", "")
