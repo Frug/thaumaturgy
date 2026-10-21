@@ -248,19 +248,17 @@ def _fill(template: str, values: dict, content: tuple = ("recap", "transcript"))
 
 def _generate(messages: list[dict], budget: int) -> str:
     """Run the summarizer to completion and return its text."""
+    # Thinking would eat the pass's budget.
     params = {"temperature": 0.3, "top_p": 0.9, "top_k": 40, "min_p": 0.05,
-              "repetition_penalty": 1.05, "max_new_tokens": budget}
-    text, reasoning = "", ""
+              "repetition_penalty": 1.05, "max_new_tokens": budget,
+              "thinking": False}
+    text = ""
     for event in engine.server.stream_chat(messages, params):
-        delta = event.get("text", "")
-        if not delta:
-            continue
-        if event.get("type") == "reasoning":
-            reasoning += delta
-        else:
-            text += delta
-    # Templates llama.cpp can't parse leave their channel markers in the text.
-    return reply.interpret(text, reasoning)[0].strip()
+        # Reasoning is never kept, even if it's all there is.
+        if event.get("type") == "delta":
+            text += event.get("text", "")
+    # Templates llama.cpp can't parse leave channel markers in the text.
+    return reply.split_channels(text)[0].strip()
 
 
 def _split_into_passes(messages: list[Message], limit: int,

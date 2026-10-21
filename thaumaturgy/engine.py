@@ -704,7 +704,12 @@ class LlamaServer:
             "min_p": p.get("min_p", 0.05),
             "repeat_penalty": p.get("repetition_penalty", 1.1),
         }
-        max_tokens = self._max_tokens(int(p.get("max_new_tokens", 512)))
+        if p.get("thinking", True):
+            max_tokens = self._max_tokens(int(p.get("max_new_tokens", 512)))
+        else:
+            # Honored only by templates that read it.
+            body["chat_template_kwargs"] = {"enable_thinking": False}
+            max_tokens = int(p.get("max_new_tokens", 512))
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
         finish_reason = None
