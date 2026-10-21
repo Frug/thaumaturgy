@@ -707,8 +707,7 @@ class LlamaServer:
         if p.get("thinking", True):
             max_tokens = self._max_tokens(int(p.get("max_new_tokens", 512)))
         else:
-            # Per request, so no reload: templates that can toggle thinking
-            # (Qwen3, Gemma 4, ...) read this flag; others ignore it.
+            # Honored only by templates that read it.
             body["chat_template_kwargs"] = {"enable_thinking": False}
             max_tokens = int(p.get("max_new_tokens", 512))
         if max_tokens is not None:
