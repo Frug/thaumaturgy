@@ -2,7 +2,7 @@
 name = "thaumaturgy"
 version = "0.0.1"
 description = "A modern, portable local-LLM chat app (NiceGUI + FastAPI, GGUF-first)."
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE"]
 dependencies = [
@@ -28,7 +28,7 @@ dev = ["pytest"]
 testpaths = ["tests"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["I"]
