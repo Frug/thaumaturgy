@@ -42,6 +42,9 @@ MIN_RECAP_TOKENS = 256
 MIN_KEEP = 4                # messages left verbatim, however big they are
 MIN_FOLD = 4                # fewer than this isn't worth a round trip
 WORDS_PER_TOKEN = 0.75      # recap budget is stated to the model in words
+# Of what fits, asked for as a ceiling: markup and names cost more than prose,
+# and models overshoot a word count, so asking for all of it gets cut off.
+WORD_HEADROOM = 0.7
 MIN_WORDS_SHARE = 0.6       # of the budget, asked for as a floor
 # Transcript one pass is asked to condense; a longer fold is split across
 # several passes, one generation each.
@@ -378,7 +381,7 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
         if not transcript.strip() and not carried:
             first_turn = last_turn + 1
             continue
-        max_words = int(share * WORDS_PER_TOKEN)
+        max_words = int(share * WORDS_PER_TOKEN * WORD_HEADROOM)
         ask = _fill(doc["instruction"], {
             "max_words": str(max_words),
             # A floor as well as a ceiling: asked only for a maximum, models

@@ -214,7 +214,7 @@ def test_the_summarizer_is_told_the_span_and_a_length_floor(monkeypatch):
     target = compaction.Plan(start=0, covers=9, used=4000, total=8192, budget=1000)
     compaction.run(conversation(turns=20), SCENARIO, target)
     assert "9 turns" in seen["ask"]            # how much it is condensing
-    assert "450-750 words" in seen["ask"]      # a floor, not just a ceiling
+    assert "315-525 words" in seen["ask"]      # a floor, not just a ceiling
     assert "{" not in seen["ask"]              # every placeholder was filled
 
 
