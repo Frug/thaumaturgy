@@ -17,8 +17,15 @@ from dataclasses import dataclass
 
 from thaumaturgy import appstate, engine, prompting, store
 from thaumaturgy.chat import prompt, reply
-from thaumaturgy.chat.models import (Chat, Message, Role, Scenario, Summary,
-                                     SystemPrompt, fingerprint)
+from thaumaturgy.chat.models import (
+    Chat,
+    Message,
+    Role,
+    Scenario,
+    Summary,
+    SystemPrompt,
+    fingerprint,
+)
 
 # Of the window, counting the reply we are about to make room for. Below this
 # nothing happens; the cost of compacting is a full prompt reprocess, since

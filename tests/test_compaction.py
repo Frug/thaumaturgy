@@ -4,8 +4,7 @@ import pytest
 
 from thaumaturgy import appstate, store
 from thaumaturgy.chat import compaction, prompt
-from thaumaturgy.chat.models import (Chat, Message, Role, Scenario, Summary,
-                                     fingerprint)
+from thaumaturgy.chat.models import Chat, Message, Role, Scenario, Summary, fingerprint
 
 SCENARIO = Scenario(name="Grondar", context="You are Grondar.",
                     opening_text="The tavern door swings open.")

@@ -9,8 +9,14 @@ import asyncio
 from nicegui import app, context, ui
 
 from thaumaturgy import appstate, engine, store
-from thaumaturgy.editing import (EditingService, Instructions, Settings, Status,
-                                 Step, editing_runtime)
+from thaumaturgy.editing import (
+    EditingService,
+    Instructions,
+    Settings,
+    Status,
+    Step,
+    editing_runtime,
+)
 from thaumaturgy.editing.spans import est_tokens
 from thaumaturgy.lang import en
 from thaumaturgy.ui.outcomes import notify
