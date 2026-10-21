@@ -49,6 +49,7 @@ PASS_INPUT_TOKENS = 10_000
 MAX_PASSES = 8              # each is a generation, so this bounds the wait
 MIN_PASS_TOKENS = 300       # a share too small to say anything useful with
 REQUEST_OVERHEAD = 256      # template scaffolding around the summarizer's own prompt
+MIN_TRANSCRIPT_TOKENS = 512
 
 
 @dataclass(frozen=True)
@@ -331,23 +332,30 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
             # included, so that part is condensed again.
             carried = (doc["carry"] + "\n" + previous.text.strip())
         elif budget - held >= MIN_PASS_TOKENS:
-            # A pass only sees its own span, so the earlier recap can stand as
-            # it is. Re-condensing it thins it out a little every time.
+            # Passes write beside the earlier recap rather than over it, so it
+            # stands as it is. Re-condensing it thins it out a little every time.
             kept = previous.text.strip()
             budget -= held
         else:
             # No room to write beside it: rebuild rather than overrun the budget.
             start = 0
 
+    system = doc["system"].strip()
     folded = chat.messages[start:target.covers]
+    # Each pass is shown the parts before it. Those come out of the same recap
+    # budget as its own reply, so together they never exceed it, and one limit
+    # holds for every span, the first included.
+    fixed = REQUEST_OVERHEAD + engine.estimate_tokens(
+        system + doc["instruction"] + doc["earlier"])
+    span_limit = max(MIN_TRANSCRIPT_TOKENS,
+                     min(PASS_INPUT_TOKENS, target.total - fixed - target.budget))
     # One generation covers the whole fold, or one per span of it. A small
     # budget takes fewer spans, since shares below MIN_PASS_TOKENS say nothing.
     passes = ([folded] if one_pass
               else _split_into_passes(
-                  folded, PASS_INPUT_TOKENS,
+                  folded, span_limit,
                   cap=max(1, min(MAX_PASSES, budget // MIN_PASS_TOKENS))))
     budgets = _pass_budgets(passes, budget)
-    system = doc["system"].strip()
 
     multi = len(passes) > 1 or bool(kept)
     parts, first_turn = [], start + 1
@@ -359,9 +367,12 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
         if on_progress is not None:
             on_progress(index + 1, len(passes))
         share = budgets[index]
+        recap_text = carried or (doc["earlier"] + "\n" + "\n\n".join(parts)
+                                 if parts else "")
+        # Measured, not bounded: whatever the split misjudged is trimmed here.
         room = target.total - share - REQUEST_OVERHEAD \
-            - engine.estimate_tokens(system + doc["instruction"] + carried)
-        transcript = _transcript(span, max(room, 512))
+            - engine.estimate_tokens(system + doc["instruction"] + recap_text)
+        transcript = _transcript(span, max(room, MIN_TRANSCRIPT_TOKENS))
         last_turn = first_turn + len(span) - 1
         # An empty span is skipped, unless it carries the earlier recap.
         if not transcript.strip() and not carried:
@@ -375,7 +386,7 @@ def run(chat: Chat, scenario: Scenario | None, target: Plan,
             "min_words": str(max(120, int(max_words * MIN_WORDS_SHARE))),
             "turns": str(len(span)),
             "scenario": scenario.name if scenario else "",
-            "recap": carried,
+            "recap": recap_text,
             "transcript": transcript,
         })
         messages = prompting.with_system([{"role": "user", "content": ask}],

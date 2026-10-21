@@ -2,7 +2,7 @@
 
 import pytest
 
-from thaumaturgy import appstate, store
+from thaumaturgy import appstate, engine, store
 from thaumaturgy.chat import compaction, prompt
 from thaumaturgy.chat.models import Chat, Message, Role, Scenario, Summary, fingerprint
 
@@ -290,11 +290,45 @@ def test_recompacting_in_passes_keeps_the_earlier_recap_as_it_stands(monkeypatch
         start=100, covers=300, used=60_000, total=100_000, budget=4000))
 
     # Kept whole under a heading for its span, with the new spans after it.
-    assert not any("Long ago" in ask for _, ask in calls)
+    # Every pass is shown it, so as not to repeat what it already records.
+    assert all("Long ago" in ask for _, ask in calls)
     assert summary.text.startswith("## Turns 1-100\n\nLong ago,")
     assert "## Turns 101-" in summary.text
     # Its tokens come out of the budget, so the whole recap still fits.
     assert sum(budget for budget, _ in calls) <= 4000 - 600
+
+
+def test_each_pass_is_shown_the_parts_before_it(monkeypatch):
+    calls = compacting(monkeypatch, "passes")
+    c = conversation(turns=200, size=1200)
+    compaction.run(c, SCENARIO, compaction.Plan(
+        start=0, covers=300, used=60_000, total=100_000, budget=4000))
+
+    assert len(calls) > 2
+    assert "already recorded" not in calls[0][1]   # nothing before the first
+    for index, (_, ask) in enumerate(calls[1:], start=1):
+        assert all(f"part {n}" in ask for n in range(1, index + 1))
+
+
+def test_passes_with_earlier_parts_still_fit_the_window(monkeypatch):
+    # Parts as long as their share allows, so the earlier context is at its
+    # largest; a window where PASS_INPUT_TOKENS no longer binds.
+    calls: list[tuple[int, str]] = []
+    monkeypatch.setattr(compaction, "_generate", lambda messages, budget:
+                        calls.append((budget, messages[-1]["content"]))
+                        or "z" * int(budget * 3.5))
+    monkeypatch.setattr(store, "compaction_strategy", lambda: "passes")
+    c = conversation(turns=200, size=1200)
+    total = 8000
+    compaction.run(c, SCENARIO, compaction.Plan(
+        start=0, covers=60, used=7000, total=total, budget=2400))
+
+    assert len(calls) > 1
+    system = store.load_compaction_prompt()["system"]
+    for share, ask in calls:
+        sent = engine.estimate_tokens(system + ask) + compaction.REQUEST_OVERHEAD
+        assert sent + share <= total
+        assert "omitted]" not in ask               # fit by the split, not trimmed
 
 
 def test_a_recap_with_no_room_left_beside_it_is_rebuilt(monkeypatch):

@@ -519,6 +519,12 @@ def default_compaction_prompt() -> dict:
             "only record of them, so carry everything from it that still "
             "matters into the new recap:"
         ),
+        "earlier": (
+            "Recap of the turns before these, already recorded. It stays in "
+            "the record as it is, so do not repeat it: write only what these "
+            "turns add or change, and describe a participant again only where "
+            "something about them has changed:"
+        ),
     }
 
 
@@ -574,6 +580,7 @@ _SUPERSEDED_COMPACTION = {
         "Recap of earlier events, already condensed once. Carry what still "
         "matters into the new recap:"
     ],
+    "earlier": [],
 }
 
 

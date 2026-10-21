@@ -14,6 +14,7 @@ RECAP_FIELDS = (
     ("system", "Summarizer role (system message)", 120),
     ("instruction", "Recap instruction", 320),
     ("carry", "Heading for the previous recap", 90),
+    ("earlier", "Heading for earlier parts (multi-pass)", 90),
 )
 
 
